@@ -1,0 +1,30 @@
+services:
+  # Backend API Service
+  - type: web
+    name: arxiv-mastery-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.12
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: PINECONE_API_KEY
+        sync: false
+      - key: PINECONE_ENVIRONMENT
+        value: us-west1-gcp
+      - key: PINECONE_INDEX
+        value: arxiv-chunks
+      - key: ARXIV_API_BASE_URL
+        value: http://export.arxiv.org/api/query
+      - key: OPENALEX_API_BASE_URL
+        value: https://api.openalex.org/works
+      - key: LOG_LEVEL
+        value: INFO
+      - key: APP_ENV
+        value: production
+    autoDeploy: true 

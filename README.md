@@ -61,6 +61,24 @@ The API will be available at http://localhost:8000
 
 API documentation is available at http://localhost:8000/docs
 
+### Docker Support
+
+You can also run the application using Docker:
+
+```bash
+# Build the image
+docker build -t arxiv-mastery-api .
+
+# Run the container
+docker run -p 8000:8000 --env-file .env arxiv-mastery-api
+```
+
+Or using Docker Compose for development:
+
+```bash
+docker-compose up
+```
+
 ## Project Structure
 
 ```
@@ -80,6 +98,9 @@ papermastery-backend/
 ├── tests/                     # Unit and integration tests
 ├── .env                       # Environment variables
 ├── requirements.txt           # Project dependencies
+├── Dockerfile                 # Docker configuration
+├── docker-compose.yml         # Docker Compose configuration
+├── render.yaml                # Render deployment configuration
 └── README.md                  # Project documentation
 ```
 
@@ -90,6 +111,29 @@ papermastery-backend/
 - `GET /api/v1/papers/{id}/learning-path`: Get a personalized learning path
 - `GET /api/v1/papers/{id}/summaries`: Get tiered summaries (beginner, intermediate, advanced)
 - `POST /api/v1/learning-items/{id}/feedback`: Submit feedback on learning materials
+
+## API Documentation
+
+The API is fully documented using OpenAPI:
+
+- **Swagger UI**: Available at `/docs` endpoint
+- **ReDoc**: Available at `/redoc` endpoint
+
+The documentation includes:
+- Detailed endpoint descriptions
+- Request and response schemas
+- Example requests and responses
+- Authentication information
+
+## Deployment
+
+The application is ready for deployment on various platforms, with special support for Render:
+
+1. **Render**: Use the provided `render.yaml` file for automatic deployment
+2. **Docker**: Use the provided `Dockerfile` for containerized deployment
+3. **Heroku**: Use the `Procfile` for Heroku deployment
+
+For detailed deployment instructions, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Development
 

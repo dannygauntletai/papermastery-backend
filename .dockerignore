@@ -1,0 +1,56 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local environment
+.env
+.env.example
+
+# Documentation and tests
+docs/
+tests/
+
+# Logs and databases
+*.log
+*.sqlite3
+*.db
+
+# Docker
+.dockerignore
+Dockerfile
+docker-compose.yml
+
+# Temp files
+*.pdf
+paper_cache/
+temp/
+downloads/
+tmp/
+
+# Render specific
+render.yaml
+
+# Other
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db 
