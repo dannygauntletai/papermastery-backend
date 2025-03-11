@@ -6,7 +6,7 @@ Create project_root/ directory.
 Initialize Git repository: git init.
 Create .gitignore to exclude .env, __pycache__, etc.
 Set up virtual environment: python -m venv venv.
-Activate virtual environment: source venv/bin/activate (Linux/Mac) or venv\Scripts\activate (Windows).
+Activate virtual environment: source venv/bin/activate (Linux/Mac).
 Install FastAPI: pip install fastapi.
 Install Uvicorn: pip install uvicorn.
 Install Supabase client: pip install supabase.

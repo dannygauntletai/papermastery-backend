@@ -5,8 +5,6 @@ Domain: papermastery.com (tentative)
 
 Version: 1.0
 
-Date: [Insert Date]
-
 1. Overview
 1.1 Problem Statement
 Academic papers on arXiv are often dense, jargon-heavy, and assume significant prior knowledge, making them challenging for many readers to understand. Existing tools provide summarization or simplification but lack a structured, engaging, and step-by-step learning experience.
