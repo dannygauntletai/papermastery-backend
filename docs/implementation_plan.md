@@ -133,6 +133,24 @@ Write tests for model selection logic.
 Document embedding options in README.md.
 Commit changes to Git.
 
+Phase 3.5: Chat Interaction with Papers (Steps 101–120)
+
+Create llm_service.py in services/ to manage language model interactions.
+Integrate a language model API (e.g., OpenAI’s GPT) into llm_service.py for generating responses.
+Create chat.py in endpoints/ to define chat-related routes.
+Implement the POST /papers/{id}/chat endpoint in chat.py to handle user queries about a specific paper.
+Parse the incoming JSON request in the endpoint to extract the user’s message or conversation history.
+Embed the user’s query using the embedding model from embedding_utils.py.
+Query Pinecone for the top-k most similar chunks, filtered by the specified paper_id.
+Retrieve the text of the relevant chunks from Supabase using the supabase_client.py.
+Construct a prompt combining the retrieved chunks and the user’s query.
+Call the language model via llm_service.py to generate a response based on the prompt.
+Return the generated response in the API response, optionally including chunk references.
+Add error handling for cases like invalid paper_id or no relevant chunks found.
+Write unit and integration tests for the chat endpoint in test_chat.py.
+Document the chat endpoint in the API documentation (e.g., FastAPI’s /docs).
+Reserved for enhancements (e.g., supporting conversation history, optimizing response relevance).
+
 Phase 4: Learning Path Generation and Management (Steps 101–140)
 Create learning.py in endpoints/ for learning path routes.
 Implement GET /papers/{id}/learning-path endpoint.
