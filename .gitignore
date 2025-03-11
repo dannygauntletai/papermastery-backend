@@ -75,3 +75,9 @@ Dockerfile.*.built
 # Any temporary files used for paper processing
 *.pdf
 paper_cache/ 
+
+# Cursor Stuff
+.cursor/*
+.cursorignore
+/plans/*
+*_docs.md
