@@ -127,6 +127,10 @@ papermastery-backend/
   - Returns beginner, intermediate, and advanced level summaries
   - These summaries are generated during the background processing stage
 
+- `GET /api/v1/papers/{paper_id}/related`: Get related papers for a specific paper
+  - Returns a list of related papers with their metadata
+  - Uses the OpenAlex API to find papers that cite or are conceptually similar to the given paper
+
 ### Background Processing
 
 The API includes background processing for:

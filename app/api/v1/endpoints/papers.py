@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from uuid import UUID
 
 from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary
@@ -163,6 +163,63 @@ async def get_paper_summaries(paper_id: UUID):
     
     logger.info(f"Retrieved summaries for paper with ID: {paper_id}")
     return paper.get("summaries")
+
+
+@router.get("/{paper_id}/related", response_model=List[Dict[str, Any]])
+async def get_related_papers_for_paper(paper_id: UUID):
+    """
+    Get related papers for a specific paper.
+    
+    Args:
+        paper_id: The UUID of the paper
+        
+    Returns:
+        A list of related papers with metadata
+        
+    Raises:
+        HTTPException: If the paper is not found or related papers are not available
+    """
+    paper = await get_paper_by_id(paper_id)
+    
+    if not paper:
+        logger.warning(f"Paper with ID {paper_id} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Paper with ID {paper_id} not found"
+        )
+    
+    # Check if related papers are already stored in the database
+    if paper.get("related_papers"):
+        logger.info(f"Retrieved related papers for paper with ID: {paper_id} from database")
+        return paper.get("related_papers")
+    
+    # If not in database, fetch them from OpenAlex API
+    arxiv_id = paper.get("arxiv_id")
+    if not arxiv_id:
+        logger.warning(f"Paper with ID {paper_id} has no arXiv ID")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Paper has no arXiv ID"
+        )
+    
+    # Fetch related papers
+    related_papers = await get_related_papers(arxiv_id)
+    
+    if not related_papers:
+        logger.warning(f"No related papers found for paper with ID {paper_id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No related papers found for this paper"
+        )
+    
+    # Update the paper in the database with the related papers
+    await update_paper(
+        paper_id,
+        {"related_papers": related_papers}
+    )
+    
+    logger.info(f"Retrieved and stored related papers for paper with ID: {paper_id}")
+    return related_papers
 
 
 # Background processing function

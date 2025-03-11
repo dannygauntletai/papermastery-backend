@@ -104,6 +104,27 @@ def mock_supabase_client():
                         
                         yield paper_id
 
+@pytest.fixture
+def mock_related_papers():
+    """Mock the related papers service for testing."""
+    with patch("app.api.v1.endpoints.papers.get_related_papers") as mock_related:
+        # Create sample related papers
+        mock_related.return_value = [
+            {
+                "title": "Related Paper 1",
+                "authors": [{"name": "Related Author 1", "affiliations": ["University 1"]}],
+                "arxiv_id": "2101.54321",
+                "abstract": "This is a related paper abstract."
+            },
+            {
+                "title": "Related Paper 2",
+                "authors": [{"name": "Related Author 2", "affiliations": ["University 2"]}],
+                "arxiv_id": "2102.12345",
+                "abstract": "This is another related paper abstract."
+            }
+        ]
+        yield mock_related
+
 def test_submit_paper(mock_arxiv_service, mock_supabase_client):
     """Test submitting a paper."""
     response = client.post(
@@ -130,4 +151,106 @@ def test_list_papers(mock_supabase_client):
     response = client.get("/api/v1/papers/")
     
     assert response.status_code == 200
-    assert len(response.json()) > 0 
+    assert len(response.json()) > 0
+
+def test_get_related_papers(mock_dependencies, mock_related_papers):
+    """Test retrieving related papers for a paper."""
+    # Create a test paper ID
+    paper_id = str(uuid.uuid4())
+    
+    # Mock the get_paper_by_id function to return a paper
+    with patch("app.api.v1.endpoints.papers.get_paper_by_id") as mock_get_by_id:
+        mock_get_by_id.return_value = {
+            "id": paper_id,
+            "arxiv_id": "2101.12345",
+            "title": "Test Paper",
+            "authors": [{"name": "Test Author", "affiliations": ["Test University"]}],
+            "abstract": "Test abstract",
+            "publication_date": "2023-01-01T00:00:00",
+            "processing_status": "completed",
+            "related_papers": None  # No related papers stored yet
+        }
+        
+        # Mock the update_paper function
+        with patch("app.api.v1.endpoints.papers.update_paper") as mock_update:
+            # Make the request
+            response = client.get(f"/api/v1/papers/{paper_id}/related")
+            
+            # Check the response
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data) == 2
+            assert data[0]["title"] == "Related Paper 1"
+            assert data[1]["title"] == "Related Paper 2"
+            
+            # Verify that get_related_papers was called with the correct arxiv_id
+            mock_related_papers.assert_called_once_with("2101.12345")
+            
+            # Verify that update_paper was called to store the related papers
+            mock_update.assert_called_once()
+
+def test_get_related_papers_from_database(mock_dependencies):
+    """Test retrieving related papers that are already stored in the database."""
+    # Create a test paper ID
+    paper_id = str(uuid.uuid4())
+    
+    # Create sample related papers
+    related_papers = [
+        {
+            "title": "Related Paper 1",
+            "authors": [{"name": "Related Author 1", "affiliations": ["University 1"]}],
+            "arxiv_id": "2101.54321",
+            "abstract": "This is a related paper abstract."
+        },
+        {
+            "title": "Related Paper 2",
+            "authors": [{"name": "Related Author 2", "affiliations": ["University 2"]}],
+            "arxiv_id": "2102.12345",
+            "abstract": "This is another related paper abstract."
+        }
+    ]
+    
+    # Mock the get_paper_by_id function to return a paper with related papers
+    with patch("app.api.v1.endpoints.papers.get_paper_by_id") as mock_get_by_id:
+        mock_get_by_id.return_value = {
+            "id": paper_id,
+            "arxiv_id": "2101.12345",
+            "title": "Test Paper",
+            "authors": [{"name": "Test Author", "affiliations": ["Test University"]}],
+            "abstract": "Test abstract",
+            "publication_date": "2023-01-01T00:00:00",
+            "processing_status": "completed",
+            "related_papers": related_papers  # Related papers already stored
+        }
+        
+        # Mock the get_related_papers function to ensure it's not called
+        with patch("app.api.v1.endpoints.papers.get_related_papers") as mock_related:
+            # Make the request
+            response = client.get(f"/api/v1/papers/{paper_id}/related")
+            
+            # Check the response
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data) == 2
+            assert data[0]["title"] == "Related Paper 1"
+            assert data[1]["title"] == "Related Paper 2"
+            
+            # Verify that get_related_papers was NOT called
+            # This is because the related papers were already in the database
+            mock_related.assert_not_called()
+
+def test_get_related_papers_paper_not_found(mock_dependencies):
+    """Test retrieving related papers for a non-existent paper."""
+    # Create a test paper ID
+    paper_id = str(uuid.uuid4())
+    
+    # Mock the get_paper_by_id function to return None
+    with patch("app.api.v1.endpoints.papers.get_paper_by_id") as mock_get_by_id:
+        mock_get_by_id.return_value = None
+        
+        # Make the request
+        response = client.get(f"/api/v1/papers/{paper_id}/related")
+        
+        # Check the response
+        assert response.status_code == 404
+        assert response.json()["detail"] == f"Paper with ID {paper_id} not found" 
