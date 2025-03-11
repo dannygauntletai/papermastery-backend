@@ -1,11 +1,16 @@
-from fastapi import FastAPI, Depends, status
+from fastapi import FastAPI, Depends, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from fastapi.routing import APIRoute
 from app.dependencies import validate_environment
 from app.api.v1.endpoints.papers import router as papers_router
+from app.api.v1.endpoints.chat import router as chat_router
+import inspect
+from typing import Callable, Dict, Any, List, Optional
 import time
 
 
+# Use the standard APIRoute instead of a patched version
 app = FastAPI(
     title="ArXiv Mastery API",
     description=(
@@ -28,14 +33,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Store startup time for health check
+# Global start time for uptime tracking
 start_time = time.time()
 
 
 @app.get("/", dependencies=[Depends(validate_environment)])
-async def root():
+async def root(
+    # args: Optional[str] = Query(None, description="Not required"),
+    # kwargs: Optional[str] = Query(None, description="Not required")
+):
     """
     Root endpoint to verify API is running.
+    
+    Args:
+        args: Optional arguments (system use only)
+        kwargs: Optional keyword arguments (system use only)
     
     Returns:
         dict: A simple welcome message
@@ -44,9 +56,16 @@ async def root():
 
 
 @app.get("/health", status_code=status.HTTP_200_OK)
-async def health_check():
+async def health_check(
+    # args: Optional[str] = Query(None, description="Not required"),
+    # kwargs: Optional[str] = Query(None, description="Not required")
+):
     """
     Health check endpoint for monitoring and deployment platforms.
+    
+    Args:
+        args: Optional arguments (system use only)
+        kwargs: Optional keyword arguments (system use only)
     
     Returns:
         dict: Health status information including uptime
@@ -59,71 +78,62 @@ async def health_check():
     }
 
 
-# Include API routers
+# Include API routers - use standard APIRoute
 app.include_router(papers_router, prefix="/api/v1")
+app.include_router(chat_router, prefix="/api/v1")
 
-
-# Custom OpenAPI schema
+# Custom OpenAPI schema to properly document the API
 def custom_openapi():
+    """
+    Generate a custom OpenAPI schema for the application.
+    
+    This function enhances the default OpenAPI schema with additional information,
+    examples, and better descriptions for the API endpoints.
+    
+    Returns:
+        dict: The enhanced OpenAPI schema
+    """
     if app.openapi_schema:
         return app.openapi_schema
     
     openapi_schema = get_openapi(
-        title="ArXiv Mastery API",
-        version="0.2.0",  # Updated version
-        description=(
-            "## Overview\n\n"
-            "The ArXiv Mastery Platform transforms arXiv papers into personalized, "
-            "interactive learning experiences. It fetches paper content and metadata, "
-            "breaks it into tiered learning levels (beginner, intermediate, advanced), "
-            "integrates multimedia, and employs gamification to enhance user engagement.\n\n"
-            
-            "## Key Features\n\n"
-            "- **Paper Processing**: Submit arXiv links and get detailed metadata, summaries, and chunks\n"
-            "- **Personalized Learning**: Generate learning paths tailored to different expertise levels\n"
-            "- **Interactive Q&A**: Ask questions about paper content and get AI-generated answers\n"
-            "- **Progress Tracking**: Monitor mastery percentage for each paper\n"
-            "- **Multimedia Integration**: Access relevant YouTube videos and other learning materials\n\n"
-            
-            "## API Endpoints\n\n"
-            "- `POST /api/v1/papers/submit`: Submit an arXiv paper for processing\n"
-            "- `GET /api/v1/papers/{paper_id}`: Get a specific paper by ID\n"
-            "- `GET /api/v1/papers/`: List all submitted papers\n"
-            "- `GET /api/v1/papers/{paper_id}/summaries`: Get tiered summaries for a paper\n\n"
-            
-            "## Vector Database\n\n"
-            "We use Pinecone for storing and retrieving vector embeddings of paper content. "
-            "These embeddings enable semantic search and related paper recommendations.\n\n"
-            
-            "## Authentication\n\n"
-            "This API uses Supabase Auth for authentication. Include the JWT token in the Authorization header.\n\n"
-            
-            "## Rate Limiting\n\n"
-            "Rate limiting is applied to prevent abuse. Please keep requests reasonable."
-        ),
+        title=app.title,
+        version=app.version,
+        description=app.description,
         routes=app.routes,
     )
     
-    # Add more custom documentation
-    # Define the various schemas based on our Pydantic models
-    # This ensures documentation matches implementation
+    # Add a more detailed API description
+    openapi_schema["info"]["description"] = """
+    # ArXiv Mastery API
+
+    This API transforms arXiv papers into personalized learning experiences.
     
-    # Add paper submission schema
-    openapi_schema["components"]["schemas"]["PaperSubmission"] = {
-        "type": "object",
-        "required": ["arxiv_link"],
-        "properties": {
-            "arxiv_link": {
-                "type": "string",
-                "format": "url",
-                "description": "URL to the arXiv paper (e.g., https://arxiv.org/abs/1912.10389)",
-                "example": "https://arxiv.org/abs/1912.10389"
-            }
-        }
-    }
+    ## Key Features:
     
-    # Add paper response schema
-    openapi_schema["components"]["schemas"]["PaperResponse"] = {
+    * **Paper Processing**: Submit arXiv links and get structured paper data
+    * **Tiered Summaries**: Get beginner, intermediate, and advanced summaries
+    * **Learning Paths**: Generate customized learning paths based on papers
+    * **Interactive Chat**: Ask questions about papers and get AI-generated answers
+    
+    ## Technology Stack:
+    
+    * FastAPI for the API framework
+    * Pinecone for vector database operations
+    * Supabase for authentication and data storage
+    * LangChain for AI processing pipelines
+    
+    ## Getting Started:
+    
+    1. Submit a paper using the `/api/v1/papers/submit` endpoint
+    2. Retrieve processed papers with `/api/v1/papers/{paper_id}`
+    3. Chat with papers using `/api/v1/papers/{paper_id}/chat`
+    
+    For more information, refer to the detailed endpoint documentation below.
+    """
+    
+    # Add paper schema
+    openapi_schema["components"]["schemas"]["Paper"] = {
         "type": "object",
         "properties": {
             "id": {
@@ -133,11 +143,11 @@ def custom_openapi():
             },
             "arxiv_id": {
                 "type": "string",
-                "description": "The arXiv ID of the paper"
+                "description": "ArXiv ID of the paper"
             },
             "title": {
                 "type": "string",
-                "description": "The title of the paper"
+                "description": "Title of the paper"
             },
             "authors": {
                 "type": "array",
@@ -146,18 +156,18 @@ def custom_openapi():
                     "properties": {
                         "name": {
                             "type": "string",
-                            "description": "Author's name"
+                            "description": "Author name"
                         },
                         "affiliations": {
                             "type": "array",
                             "items": {
                                 "type": "string"
                             },
-                            "description": "Author's affiliations"
+                            "description": "Author affiliations"
                         }
                     }
                 },
-                "description": "List of authors"
+                "description": "List of paper authors"
             },
             "abstract": {
                 "type": "string",
@@ -166,49 +176,15 @@ def custom_openapi():
             "publication_date": {
                 "type": "string",
                 "format": "date-time",
-                "description": "Publication date"
+                "description": "Publication date of the paper"
             },
-            "summaries": {
-                "type": "object",
-                "nullable": True,
-                "properties": {
-                    "beginner": {
-                        "type": "string",
-                        "description": "Simplified, jargon-free overview"
-                    },
-                    "intermediate": {
-                        "type": "string",
-                        "description": "Key points with explained technical terms"
-                    },
-                    "advanced": {
-                        "type": "string",
-                        "description": "Detailed summary with technical depth"
-                    }
-                },
-                "description": "Tiered summaries of the paper"
-            },
-            "related_papers": {
+            "categories": {
                 "type": "array",
                 "nullable": True,
                 "items": {
-                    "type": "object",
-                    "properties": {
-                        "arxiv_id": {
-                            "type": "string",
-                            "description": "The arXiv ID of the related paper"
-                        },
-                        "title": {
-                            "type": "string",
-                            "description": "The title of the related paper"
-                        },
-                        "similarity_score": {
-                            "type": "number",
-                            "format": "float",
-                            "description": "Similarity score between 0 and 1"
-                        }
-                    }
+                    "type": "string"
                 },
-                "description": "List of related papers based on semantic similarity"
+                "description": "ArXiv categories of the paper"
             },
             "tags": {
                 "type": "array",
@@ -262,53 +238,53 @@ def custom_openapi():
                         },
                         "type": {
                             "type": "string",
-                            "enum": ["quiz", "text", "flashcard"],
+                            "enum": ["video", "article", "book", "course", "exercise"],
                             "description": "Type of learning material"
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Title of the learning material"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Description of the learning material"
+                        },
+                        "url": {
+                            "type": "string",
+                            "format": "uri",
+                            "description": "URL to the learning material"
                         },
                         "level": {
                             "type": "string",
                             "enum": ["beginner", "intermediate", "advanced"],
-                            "description": "Difficulty level"
+                            "description": "Difficulty level of the material"
                         },
-                        "category": {
-                            "type": "string",
-                            "description": "Subject category (e.g., math, physics)"
-                        },
-                        "data": {
-                            "type": "object",
-                            "description": "Content of the learning material"
-                        },
-                        "order": {
+                        "estimated_time_minutes": {
                             "type": "integer",
-                            "description": "Sequence order in the learning path"
+                            "description": "Estimated time to complete in minutes"
                         },
-                        "videos": {
+                        "prerequisites": {
                             "type": "array",
                             "items": {
-                                "type": "object",
-                                "properties": {
-                                    "title": {
-                                        "type": "string",
-                                        "description": "Video title"
-                                    },
-                                    "url": {
-                                        "type": "string",
-                                        "format": "url",
-                                        "description": "URL to the video"
-                                    }
-                                }
+                                "type": "string"
                             },
-                            "description": "Related videos"
+                            "description": "Prerequisites for this material"
                         }
                     }
                 },
-                "description": "Learning materials in this path"
+                "description": "List of learning materials in the path"
             },
-            "estimated_time_minutes": {
+            "estimated_total_time_minutes": {
                 "type": "integer",
-                "description": "Estimated time to complete the learning path in minutes"
+                "description": "Total estimated time to complete the learning path"
+            },
+            "last_modified": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the learning path was last modified (matches publication date)"
             }
-        }
+        },
+        "description": "A structured learning path based on a paper"
     }
     
     # Define endpoint tags for better organization
@@ -324,8 +300,71 @@ def custom_openapi():
         {
             "name": "system",
             "description": "System status and health endpoints"
+        },
+        {
+            "name": "chat",
+            "description": "Chat with papers, ask questions, and get AI-generated answers"
         }
     ]
+    
+    # Enhance ChatRequest schema
+    if "ChatRequest" in openapi_schema["components"]["schemas"]:
+        openapi_schema["components"]["schemas"]["ChatRequest"]["description"] = (
+            "Request model for chatting with a paper. Submit your question about the paper "
+            "content and the system will find relevant chunks and generate a response."
+        )
+        openapi_schema["components"]["schemas"]["ChatRequest"]["example"] = {
+            "query": "What is the main methodology used in this paper?"
+        }
+    
+    # Enhance ChatResponse schema
+    if "ChatResponse" in openapi_schema["components"]["schemas"]:
+        openapi_schema["components"]["schemas"]["ChatResponse"]["description"] = (
+            "Response model for chat queries. Contains the AI-generated answer, "
+            "the original query, and source chunks from the paper that were used to "
+            "generate the response."
+        )
+        openapi_schema["components"]["schemas"]["ChatResponse"]["example"] = {
+            "response": "The paper uses a novel deep learning approach combining "
+                       "transformer models with...",
+            "query": "What is the main methodology used in this paper?",
+            "sources": [
+                {
+                    "chunk_id": "chunk_123",
+                    "text": "In our methodology, we propose a novel approach using "
+                           "transformer models...",
+                    "metadata": {"page": 3, "section": "Methodology"}
+                }
+            ],
+            "paper_id": "123e4567-e89b-12d3-a456-426614174000"
+        }
+    
+    # Enhance PaperResponse schema with example
+    if "PaperResponse" in openapi_schema["components"]["schemas"]:
+        openapi_schema["components"]["schemas"]["PaperResponse"]["example"] = {
+            "id": "123e4567-e89b-12d3-a456-426614174000",
+            "arxiv_id": "1912.10389",
+            "title": "Attention Is All You Need",
+            "authors": [
+                {
+                    "name": "Jane Doe",
+                    "affiliations": ["University of Research"]
+                }
+            ],
+            "abstract": "We propose a novel architecture for neural sequence modeling...",
+            "publication_date": "2020-01-01T00:00:00Z"
+        }
+    
+    # Make args and kwargs optional in schema
+    for path in openapi_schema["paths"]:
+        for method in openapi_schema["paths"][path]:
+            if "parameters" in openapi_schema["paths"][path][method]:
+                parameters = openapi_schema["paths"][path][method]["parameters"]
+                # Filter out args and kwargs parameters completely
+                openapi_schema["paths"][path][method]["parameters"] = [
+                    param for param in parameters 
+                    if param.get("name") not in ["args", "kwargs"]
+                ]
     
     app.openapi_schema = openapi_schema
     return app.openapi_schema

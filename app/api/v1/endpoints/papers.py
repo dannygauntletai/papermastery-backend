@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks, Query
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 
@@ -33,7 +33,9 @@ router = APIRouter(
 @router.post("/submit", response_model=PaperResponse, status_code=status.HTTP_202_ACCEPTED)
 async def submit_paper(
     paper_submission: PaperSubmission,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    # args: Optional[str] = Query(None, description="Not required"),
+    # kwargs: Optional[str] = Query(None, description="Not required")
 ):
     """
     Submit an arXiv paper for processing.
@@ -44,6 +46,8 @@ async def submit_paper(
     Args:
         paper_submission: The submission request containing the arXiv link
         background_tasks: FastAPI background tasks
+        # args: Optional arguments (system use only)
+        # kwargs: Optional keyword arguments (system use only)
         
     Returns:
         The paper data with processing status
@@ -75,7 +79,7 @@ async def submit_paper(
         "summaries": None,
         "embedding_id": None,
         "related_papers": None,
-        "processing_status": "pending"
+        "tags": {"status": "pending"}  # Use tags field to track status instead of processing_status
     }
     
     new_paper = await insert_paper(paper_data)
@@ -92,18 +96,24 @@ async def submit_paper(
 
 
 @router.get("/{paper_id}", response_model=PaperResponse)
-async def get_paper(paper_id: UUID):
+async def get_paper(
+    paper_id: UUID,
+    # args: Optional[str] = Query(None, description="Not required"),
+    # kwargs: Optional[str] = Query(None, description="Not required")
+):
     """
     Get details for a specific paper.
     
     Args:
         paper_id: The UUID of the paper
+        # args: Optional arguments (system use only)
+        # kwargs: Optional keyword arguments (system use only)
         
     Returns:
         The paper data
         
     Raises:
-        HTTPException: If the paper is not found
+        HTTPException: If paper not found
     """
     paper = await get_paper_by_id(paper_id)
     
@@ -119,12 +129,19 @@ async def get_paper(paper_id: UUID):
 
 
 @router.get("/", response_model=List[PaperResponse])
-async def list_papers():
+async def list_papers(
+    # args: Optional[str] = Query(None, description="Not required"),
+    # kwargs: Optional[str] = Query(None, description="Not required")
+):
     """
     List all submitted papers.
     
+    Args:
+        # args: Optional arguments (system use only)
+        # kwargs: Optional keyword arguments (system use only)
+        
     Returns:
-        A list of papers
+        List of papers
     """
     papers = await db_list_papers()
     logger.info(f"Retrieved {len(papers)} papers")
@@ -132,18 +149,24 @@ async def list_papers():
 
 
 @router.get("/{paper_id}/summaries", response_model=PaperSummary)
-async def get_paper_summaries(paper_id: UUID):
+async def get_paper_summaries(
+    paper_id: UUID,
+    # args: Optional[str] = Query(None, description="Not required"),
+    # kwargs: Optional[str] = Query(None, description="Not required")
+):
     """
-    Get tiered summaries for a specific paper.
+    Get tiered summaries for a paper.
     
     Args:
         paper_id: The UUID of the paper
+        # args: Optional arguments (system use only)
+        # kwargs: Optional keyword arguments (system use only)
         
     Returns:
-        The paper summaries at beginner, intermediate, and advanced levels
+        Beginner, intermediate, and advanced summaries
         
     Raises:
-        HTTPException: If the paper is not found or summaries are not available
+        HTTPException: If paper not found or summaries not available
     """
     paper = await get_paper_by_id(paper_id)
     
@@ -166,18 +189,24 @@ async def get_paper_summaries(paper_id: UUID):
 
 
 @router.get("/{paper_id}/related", response_model=List[Dict[str, Any]])
-async def get_related_papers_for_paper(paper_id: UUID):
+async def get_related_papers_for_paper(
+    paper_id: UUID,
+    # args: Optional[str] = Query(None, description="Not required"),
+    # kwargs: Optional[str] = Query(None, description="Not required")
+):
     """
-    Get related papers for a specific paper.
+    Get papers related to the specified paper.
     
     Args:
         paper_id: The UUID of the paper
+        # args: Optional arguments (system use only)
+        # kwargs: Optional keyword arguments (system use only)
         
     Returns:
-        A list of related papers with metadata
+        List of related papers with similarity scores
         
     Raises:
-        HTTPException: If the paper is not found or related papers are not available
+        HTTPException: If paper not found
     """
     paper = await get_paper_by_id(paper_id)
     
@@ -244,7 +273,7 @@ async def process_paper_in_background(arxiv_id: str, paper_id: UUID):
         logger.info(f"Processing paper in background: {arxiv_id}")
         
         # Update status to processing
-        await update_paper(paper_id, {"processing_status": "processing"})
+        await update_paper(paper_id, {"tags": {"status": "processing"}})
         
         # Download and process PDF
         full_text, text_chunks = await download_and_process_paper(arxiv_id)
@@ -279,7 +308,7 @@ async def process_paper_in_background(arxiv_id: str, paper_id: UUID):
                 },
                 "embedding_id": embedding_id,
                 "related_papers": related_papers,
-                "processing_status": "completed",
+                "tags": {"status": "completed"},
                 "chunk_count": len(chunks)
             }
         )
@@ -294,7 +323,7 @@ async def process_paper_in_background(arxiv_id: str, paper_id: UUID):
             await update_paper(
                 paper_id,
                 {
-                    "processing_status": "error",
+                    "tags": {"status": "error"},
                     "error_message": str(e)[:500]  # Limit error message length
                 }
             )

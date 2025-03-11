@@ -41,6 +41,12 @@ class ChunkingError(ArXivMasteryException):
     def __init__(self, message: str):
         self.message = f"Error chunking text: {message}"
         super().__init__(self.message)
+
+class LLMServiceError(ArXivMasteryException):
+    """Raised when there is an error with the LLM service."""
+    def __init__(self, message: str):
+        self.message = f"LLM service error: {message}"
+        super().__init__(self.message)
         
 # HTTP Exception Handlers
 def http_exception_handler(exc):
@@ -68,6 +74,11 @@ def http_exception_handler(exc):
     elif isinstance(exc, ChunkingError):
         return HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=exc.message
+        )
+    elif isinstance(exc, LLMServiceError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=exc.message
         )
     else:
