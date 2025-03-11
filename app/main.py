@@ -22,6 +22,24 @@ app = FastAPI(
     version="0.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    openapi_tags=[
+        {
+            "name": "papers",
+            "description": "Operations related to paper submission, retrieval, and processing"
+        },
+        {
+            "name": "learning",
+            "description": "Operations related to learning paths and educational materials"
+        },
+        {
+            "name": "chat",
+            "description": "Chat with papers, ask questions, and get AI-generated answers"
+        },
+        {
+            "name": "system",
+            "description": "System status and health endpoints"
+        }
+    ]
 )
 
 # Configure CORS
@@ -37,17 +55,10 @@ app.add_middleware(
 start_time = time.time()
 
 
-@app.get("/", dependencies=[Depends(validate_environment)])
-async def root(
-    # args: Optional[str] = Query(None, description="Not required"),
-    # kwargs: Optional[str] = Query(None, description="Not required")
-):
+@app.get("/", dependencies=[Depends(validate_environment)], tags=["system"])
+async def root():
     """
     Root endpoint to verify API is running.
-    
-    Args:
-        args: Optional arguments (system use only)
-        kwargs: Optional keyword arguments (system use only)
     
     Returns:
         dict: A simple welcome message
@@ -55,17 +66,10 @@ async def root(
     return {"message": "Welcome to ArXiv Mastery"}
 
 
-@app.get("/health", status_code=status.HTTP_200_OK)
-async def health_check(
-    # args: Optional[str] = Query(None, description="Not required"),
-    # kwargs: Optional[str] = Query(None, description="Not required")
-):
+@app.get("/health", status_code=status.HTTP_200_OK, tags=["system"])
+async def health_check():
     """
     Health check endpoint for monitoring and deployment platforms.
-    
-    Args:
-        args: Optional arguments (system use only)
-        kwargs: Optional keyword arguments (system use only)
     
     Returns:
         dict: Health status information including uptime
@@ -118,18 +122,35 @@ def custom_openapi():
     
     ## Technology Stack:
     
-    * FastAPI for the API framework
-    * Pinecone for vector database operations
-    * Supabase for authentication and data storage
-    * LangChain for AI processing pipelines
+    * **Backend**: FastAPI, Python, Pydantic
+    * **Vector Database**: Pinecone for semantic search and related papers
+    * **Storage**: Supabase for paper metadata and summaries
+    * **NLP**: OpenAI GPT models for summarization and chat
     
-    ## Getting Started:
+    ## API Usage Guide:
     
-    1. Submit a paper using the `/api/v1/papers/submit` endpoint
-    2. Retrieve processed papers with `/api/v1/papers/{paper_id}`
-    3. Chat with papers using `/api/v1/papers/{paper_id}/chat`
+    1. **Submit a Paper**: POST to `/api/v1/papers/submit` with an arXiv link
+    2. **List Papers**: GET `/api/v1/papers/` to see all processed papers
+    3. **Get Paper Details**: GET `/api/v1/papers/{paper_id}` for a specific paper
+    4. **Get Summaries**: GET `/api/v1/papers/{paper_id}/summaries` for tiered summaries
+    5. **Get Related Papers**: GET `/api/v1/papers/{paper_id}/related` for similar papers
+    6. **Chat with Paper**: POST to `/api/v1/chat/{paper_id}` with your question
     
-    For more information, refer to the detailed endpoint documentation below.
+    ## Paper Processing Status:
+    
+    The `tags.status` field in the paper response indicates the processing state:
+    
+    * **pending**: Initial metadata fetched, awaiting processing
+    * **processing**: Currently generating summaries or finding related papers
+    * **completed**: All processing finished, all features available
+    * **failed**: Processing encountered an error
+    
+    ## Data Models:
+    
+    * **PaperResponse**: Complete paper with metadata, summaries, and related papers
+    * **PaperSummary**: Tiered summaries at beginner, intermediate, and advanced levels
+    * **ChatRequest**: Question about a paper
+    * **ChatResponse**: AI-generated answer with source references
     """
     
     # Add paper schema
@@ -339,8 +360,12 @@ def custom_openapi():
             "paper_id": "123e4567-e89b-12d3-a456-426614174000"
         }
     
-    # Enhance PaperResponse schema with example
+    # Enhance PaperResponse schema with example and updated description
     if "PaperResponse" in openapi_schema["components"]["schemas"]:
+        openapi_schema["components"]["schemas"]["PaperResponse"]["description"] = (
+            "Complete paper data with metadata, summaries, and related papers. "
+            "The tags field contains processing status and other metadata."
+        )
         openapi_schema["components"]["schemas"]["PaperResponse"]["example"] = {
             "id": "123e4567-e89b-12d3-a456-426614174000",
             "arxiv_id": "1912.10389",
@@ -352,8 +377,70 @@ def custom_openapi():
                 }
             ],
             "abstract": "We propose a novel architecture for neural sequence modeling...",
-            "publication_date": "2020-01-01T00:00:00Z"
+            "publication_date": "2020-01-01T00:00:00Z",
+            "tags": {
+                "status": "completed",
+                "category": "machine-learning"
+            },
+            "summaries": {
+                "beginner": "This paper introduces the Transformer model...",
+                "intermediate": "The Transformer architecture uses self-attention...",
+                "advanced": "The multi-head attention mechanism allows the model to..."
+            },
+            "related_papers": [
+                {
+                    "id": "456e789f-e89b-12d3-a456-426614174000",
+                    "title": "BERT: Pre-training of Deep Bidirectional Transformers",
+                    "authors": ["Researcher One", "Researcher Two"],
+                    "arxiv_id": "1810.04805",
+                    "url": "https://arxiv.org/abs/1810.04805"
+                }
+            ]
         }
+    
+    # Update submission endpoint documentation
+    for path in openapi_schema["paths"]:
+        if path.endswith("/papers/submit"):
+            for method in openapi_schema["paths"][path]:
+                if method == "post":
+                    openapi_schema["paths"][path][method]["description"] = (
+                        "Submit an arXiv paper for processing. The system will fetch metadata, "
+                        "generate summaries, and identify related papers asynchronously. "
+                        "The status can be tracked through the tags.status field."
+                    )
+                    if "responses" in openapi_schema["paths"][path][method]:
+                        if "202" in openapi_schema["paths"][path][method]["responses"]:
+                            openapi_schema["paths"][path][method]["responses"]["202"]["description"] = (
+                                "Paper submission accepted and processing started. Returns the paper data "
+                                "with initial metadata. Summaries and related papers will be added later."
+                            )
+        elif path.endswith("/papers/"):
+            for method in openapi_schema["paths"][path]:
+                if method == "get":
+                    openapi_schema["paths"][path][method]["description"] = (
+                        "List all papers in the system. Papers are ordered by publication date."
+                    )
+        elif "/papers/{paper_id}" in path and not path.endswith(("summaries", "related")):
+            for method in openapi_schema["paths"][path]:
+                if method == "get":
+                    openapi_schema["paths"][path][method]["description"] = (
+                        "Get detailed information about a specific paper including metadata, "
+                        "summaries (if available), and related papers (if available)."
+                    )
+        elif path.endswith("/summaries"):
+            for method in openapi_schema["paths"][path]:
+                if method == "get":
+                    openapi_schema["paths"][path][method]["description"] = (
+                        "Get tiered summaries (beginner, intermediate, advanced) for a specific paper. "
+                        "Returns 404 if summaries are not yet generated."
+                    )
+        elif path.endswith("/related"):
+            for method in openapi_schema["paths"][path]:
+                if method == "get":
+                    openapi_schema["paths"][path][method]["description"] = (
+                        "Get related papers for a specific paper. Returns 404 if related papers "
+                        "are not yet identified or if none are found."
+                    )
     
     # Make args and kwargs optional in schema
     for path in openapi_schema["paths"]:
