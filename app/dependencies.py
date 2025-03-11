@@ -100,4 +100,44 @@ async def rate_limit(request: Request, limit: int = 5, window: int = 60):
             "timestamp": current_time
         }
     
-    return True 
+    return True
+
+async def get_current_user(request: Request) -> str:
+    """
+    Dependency to get the current authenticated user.
+    
+    Args:
+        request: The FastAPI request object
+        
+    Returns:
+        str: The user ID
+        
+    Raises:
+        HTTPException: If user is not authenticated
+    """
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    try:
+        # Verify the JWT token using Supabase
+        token = auth_header.split(" ")[1]
+        user = supabase.auth.get_user(token)
+        
+        # Access the user ID from the correct location in the response
+        user_id = user.user.id
+        if not user_id:
+            raise ValueError("User ID not found in response")
+            
+        return user_id
+    except Exception as e:
+        logger.error(f"Authentication error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) 
