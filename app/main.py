@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from app.dependencies import validate_environment
+from app.api.v1.endpoints.papers import router as papers_router
 import time
 
 
@@ -58,6 +59,10 @@ async def health_check():
     }
 
 
+# Include API routers
+app.include_router(papers_router, prefix="/api/v1")
+
+
 # Custom OpenAPI schema
 def custom_openapi():
     if app.openapi_schema:
@@ -65,7 +70,7 @@ def custom_openapi():
     
     openapi_schema = get_openapi(
         title="ArXiv Mastery API",
-        version="0.1.0",
+        version="0.2.0",  # Updated version
         description=(
             "## Overview\n\n"
             "The ArXiv Mastery Platform transforms arXiv papers into personalized, "
@@ -79,6 +84,16 @@ def custom_openapi():
             "- **Interactive Q&A**: Ask questions about paper content and get AI-generated answers\n"
             "- **Progress Tracking**: Monitor mastery percentage for each paper\n"
             "- **Multimedia Integration**: Access relevant YouTube videos and other learning materials\n\n"
+            
+            "## API Endpoints\n\n"
+            "- `POST /api/v1/papers/submit`: Submit an arXiv paper for processing\n"
+            "- `GET /api/v1/papers/{paper_id}`: Get a specific paper by ID\n"
+            "- `GET /api/v1/papers/`: List all submitted papers\n"
+            "- `GET /api/v1/papers/{paper_id}/summaries`: Get tiered summaries for a paper\n\n"
+            
+            "## Vector Database\n\n"
+            "We use Pinecone for storing and retrieving vector embeddings of paper content. "
+            "These embeddings enable semantic search and related paper recommendations.\n\n"
             
             "## Authentication\n\n"
             "This API uses Supabase Auth for authentication. Include the JWT token in the Authorization header.\n\n"
@@ -155,6 +170,7 @@ def custom_openapi():
             },
             "summaries": {
                 "type": "object",
+                "nullable": True,
                 "properties": {
                     "beginner": {
                         "type": "string",
@@ -170,8 +186,59 @@ def custom_openapi():
                     }
                 },
                 "description": "Tiered summaries of the paper"
+            },
+            "related_papers": {
+                "type": "array",
+                "nullable": True,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "arxiv_id": {
+                            "type": "string",
+                            "description": "The arXiv ID of the related paper"
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "The title of the related paper"
+                        },
+                        "similarity_score": {
+                            "type": "number",
+                            "format": "float",
+                            "description": "Similarity score between 0 and 1"
+                        }
+                    }
+                },
+                "description": "List of related papers based on semantic similarity"
+            },
+            "tags": {
+                "type": "array",
+                "nullable": True,
+                "items": {
+                    "type": "string"
+                },
+                "description": "Tags categorizing the paper content"
             }
         }
+    }
+    
+    # Add paper summary schema
+    openapi_schema["components"]["schemas"]["PaperSummary"] = {
+        "type": "object",
+        "properties": {
+            "beginner": {
+                "type": "string",
+                "description": "Simplified summary for beginners with minimal technical jargon"
+            },
+            "intermediate": {
+                "type": "string",
+                "description": "Intermediate summary with explained technical terms"
+            },
+            "advanced": {
+                "type": "string",
+                "description": "Advanced summary maintaining full technical depth"
+            }
+        },
+        "description": "Tiered summaries of the paper at different expertise levels"
     }
     
     # Add learning path schema
@@ -244,14 +311,24 @@ def custom_openapi():
         }
     }
     
+    # Define endpoint tags for better organization
+    openapi_schema["tags"] = [
+        {
+            "name": "papers",
+            "description": "Operations related to paper submission, retrieval, and processing"
+        },
+        {
+            "name": "learning",
+            "description": "Operations related to learning paths and educational materials"
+        },
+        {
+            "name": "system",
+            "description": "System status and health endpoints"
+        }
+    ]
+    
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
 
-app.openapi = custom_openapi
-
-# Import and include API routers
-# Will be implemented in later phases
-# from app.api.v1.endpoints import papers, learning
-# app.include_router(papers.router, prefix="/api/v1")
-# app.include_router(learning.router, prefix="/api/v1") 
+app.openapi = custom_openapi 

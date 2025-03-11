@@ -1,8 +1,26 @@
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
+from app.dependencies import validate_environment
 
 client = TestClient(app)
+
+# Override validate_environment dependency
+@pytest.fixture(autouse=True)
+def mock_dependencies():
+    """Mock the dependencies."""
+    # Override the validate_environment dependency
+    async def mock_validate_environment():
+        return True
+    
+    # Save old overrides and update with our new ones
+    old_overrides = app.dependency_overrides.copy()
+    app.dependency_overrides[validate_environment] = mock_validate_environment
+    
+    yield
+    
+    # Restore original overrides
+    app.dependency_overrides = old_overrides
 
 
 def test_root_endpoint():

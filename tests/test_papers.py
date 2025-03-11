@@ -1,0 +1,133 @@
+import pytest
+from fastapi.testclient import TestClient
+from unittest.mock import patch, AsyncMock, MagicMock
+from datetime import datetime
+import uuid
+
+from app.main import app
+from app.api.v1.models import PaperMetadata, Author
+from app.dependencies import validate_environment
+
+# Create a test client
+client = TestClient(app)
+
+# Override validate_environment dependency
+@pytest.fixture(autouse=True)
+def mock_dependencies():
+    """Mock the dependencies."""
+    # Override the validate_environment dependency
+    async def mock_validate_environment():
+        return True
+    
+    # Save old overrides and update with our new ones
+    old_overrides = app.dependency_overrides.copy()
+    app.dependency_overrides[validate_environment] = mock_validate_environment
+    
+    yield
+    
+    # Restore original overrides
+    app.dependency_overrides = old_overrides
+
+@pytest.fixture
+def mock_arxiv_service():
+    """Mock the arxiv service for testing."""
+    with patch("app.api.v1.endpoints.papers.fetch_paper_metadata") as mock_fetch:
+        # Create a sample paper metadata
+        mock_metadata = PaperMetadata(
+            arxiv_id="2101.12345",
+            title="Test Paper Title",
+            authors=[Author(name="Test Author", affiliations=["Test University"])],
+            abstract="This is a test abstract for the paper.",
+            publication_date=datetime.now(),
+            categories=["cs.AI"],
+            doi=None
+        )
+        
+        mock_fetch.return_value = mock_metadata
+        
+        with patch("app.api.v1.endpoints.papers.download_and_process_paper") as mock_download:
+            mock_download.return_value = ("Full text", ["chunk1", "chunk2"])
+            
+            with patch("app.api.v1.endpoints.papers.get_related_papers") as mock_related:
+                mock_related.return_value = []
+                
+                with patch("app.services.chunk_service.chunk_text") as mock_chunk:
+                    mock_chunks = [
+                        {"text": "chunk1", "metadata": {}},
+                        {"text": "chunk2", "metadata": {}}
+                    ]
+                    mock_chunk.return_value = mock_chunks
+                    
+                    with patch("app.services.pinecone_service.store_chunks") as mock_store:
+                        mock_store.return_value = str(uuid.uuid4())
+                        
+                        with patch("app.services.summarization_service.generate_summaries") as mock_summarize:
+                            mock_summarize.return_value = {
+                                "beginner": "Beginner summary",
+                                "intermediate": "Intermediate summary",
+                                "advanced": "Advanced summary"
+                            }
+                            
+                            yield
+
+@pytest.fixture
+def mock_supabase_client():
+    """Mock the Supabase client for testing."""
+    with patch("app.api.v1.endpoints.papers.get_paper_by_arxiv_id") as mock_get_by_arxiv:
+        mock_get_by_arxiv.return_value = None
+        
+        with patch("app.api.v1.endpoints.papers.insert_paper") as mock_insert:
+            paper_id = str(uuid.uuid4())
+            
+            mock_paper = {
+                "id": paper_id,
+                "arxiv_id": "2101.12345",
+                "title": "Test Paper Title",
+                "authors": [{"name": "Test Author", "affiliations": ["Test University"]}],
+                "abstract": "This is a test abstract for the paper.",
+                "publication_date": datetime.now().isoformat(),
+                "summaries": None,
+                "related_papers": [],
+                "tags": []
+            }
+            
+            mock_insert.return_value = mock_paper
+            
+            with patch("app.api.v1.endpoints.papers.get_paper_by_id") as mock_get_by_id:
+                mock_get_by_id.return_value = mock_paper
+                
+                with patch("app.api.v1.endpoints.papers.update_paper") as mock_update:
+                    mock_update.return_value = mock_paper
+                    
+                    with patch("app.api.v1.endpoints.papers.db_list_papers") as mock_list:
+                        mock_list.return_value = [mock_paper]
+                        
+                        yield paper_id
+
+def test_submit_paper(mock_arxiv_service, mock_supabase_client):
+    """Test submitting a paper."""
+    response = client.post(
+        "/api/v1/papers/submit",
+        json={"arxiv_link": "https://arxiv.org/abs/2101.12345"}
+    )
+    
+    print(f"Response status: {response.status_code}")
+    print(f"Response content: {response.content.decode()}")
+    
+    assert response.status_code == 202
+    assert response.json()["arxiv_id"] == "2101.12345"
+    assert response.json()["title"] == "Test Paper Title"
+
+def test_get_paper(mock_supabase_client):
+    """Test getting a paper by ID."""
+    response = client.get(f"/api/v1/papers/{mock_supabase_client}")
+    
+    assert response.status_code == 200
+    assert response.json()["arxiv_id"] == "2101.12345"
+
+def test_list_papers(mock_supabase_client):
+    """Test listing all papers."""
+    response = client.get("/api/v1/papers/")
+    
+    assert response.status_code == 200
+    assert len(response.json()) > 0 
