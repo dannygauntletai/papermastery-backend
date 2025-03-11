@@ -1,9 +1,15 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from app.database.supabase_client import supabase
 from app.core.logger import get_logger
 from typing import Dict, Any
+import time
+from datetime import datetime, timedelta
 
 logger = get_logger(__name__)
+
+# Simple in-memory rate limiting store
+# In production, you would use Redis or another distributed cache
+rate_limit_store = {}
 
 async def get_supabase_client():
     """
@@ -14,7 +20,7 @@ async def get_supabase_client():
     """
     return supabase
 
-async def validate_environment(env_vars: Dict[str, Any] = Depends()):
+async def validate_environment():
     """
     Dependency to validate that required environment variables are set.
     This is mainly for demonstration as we've already validated in config.py.
@@ -41,4 +47,57 @@ async def validate_environment(env_vars: Dict[str, Any] = Depends()):
             detail=f"Server configuration error: Missing environment variables: {', '.join(missing_vars)}"
         )
         
+    return True
+
+async def rate_limit(request: Request, limit: int = 5, window: int = 60):
+    """
+    Dependency to enforce rate limiting on endpoints.
+    
+    Args:
+        request: The FastAPI request object
+        limit: Maximum number of requests allowed in the window
+        window: Time window in seconds
+        
+    Raises:
+        HTTPException: If rate limit is exceeded
+        
+    Returns:
+        True if rate limit is not exceeded
+    """
+    # Get client IP as identifier (in production, use authenticated user ID)
+    client_id = request.client.host if request.client else "unknown"
+    
+    # Clean up expired entries
+    current_time = time.time()
+    for key in list(rate_limit_store.keys()):
+        if current_time - rate_limit_store[key]["timestamp"] > window:
+            del rate_limit_store[key]
+    
+    # Check if client has any requests recorded
+    if client_id in rate_limit_store:
+        client_data = rate_limit_store[client_id]
+        # If within window, increment count
+        if current_time - client_data["timestamp"] < window:
+            client_data["count"] += 1
+            # If exceeding limit, raise exception
+            if client_data["count"] > limit:
+                reset_time = datetime.fromtimestamp(client_data["timestamp"] + window)
+                reset_seconds = int((reset_time - datetime.now()).total_seconds())
+                logger.warning(f"Rate limit exceeded for client {client_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"Rate limit exceeded. Try again in {reset_seconds} seconds.",
+                    headers={"Retry-After": str(reset_seconds)}
+                )
+        else:
+            # If outside window, reset count
+            client_data["count"] = 1
+            client_data["timestamp"] = current_time
+    else:
+        # First request from this client
+        rate_limit_store[client_id] = {
+            "count": 1,
+            "timestamp": current_time
+        }
+    
     return True 

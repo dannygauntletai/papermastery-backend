@@ -130,7 +130,7 @@ async def list_papers() -> List[Dict[str, Any]]:
         SupabaseError: If there's an error listing papers
     """
     try:
-        response = supabase.table("papers").select("*").order("created_at", desc=True).execute()
+        response = supabase.table("papers").select("*").order("publication_date", desc=True).execute()
         
         return response.data
     except Exception as e:

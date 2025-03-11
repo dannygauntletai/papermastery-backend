@@ -20,6 +20,10 @@ ARXIV_API_BASE_URL: str = os.getenv("ARXIV_API_BASE_URL", "http://export.arxiv.o
 # OpenAlex API configuration
 OPENALEX_API_BASE_URL: str = os.getenv("OPENALEX_API_BASE_URL", "https://api.openalex.org/works")
 
+# OpenAI API configuration
+OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o")
+
 # Logging configuration
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
@@ -35,6 +39,8 @@ def validate_config() -> None:
         raise ValueError("SUPABASE_KEY environment variable is not set")
     if not PINECONE_API_KEY:
         raise ValueError("PINECONE_API_KEY environment variable is not set")
+    if not OPENAI_API_KEY and APP_ENV != "testing":
+        raise ValueError("OPENAI_API_KEY environment variable is not set and required for non-testing environments")
         
 # Call validation on import
 validate_config() 

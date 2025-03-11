@@ -48,7 +48,7 @@ class PaperResponse(BaseModel):
     publication_date: datetime
     summaries: Optional[PaperSummary] = None
     related_papers: Optional[List[Dict[str, Any]]] = None
-    tags: Optional[List[str]] = None
+    tags: Optional[Dict[str, Any]] = None
     
 class LearningMaterial(BaseModel):
     """Model for learning materials."""
@@ -65,4 +65,28 @@ class LearningPath(BaseModel):
     """Model for learning paths."""
     paper_id: UUID
     materials: List[LearningMaterial]
-    estimated_time_minutes: int 
+    estimated_time_minutes: int
+
+class ChatSourceChunk(BaseModel):
+    """Model for a source chunk used in chat responses."""
+    chunk_id: str
+    text: str
+    metadata: Optional[Dict[str, Any]] = None
+
+class ChatRequest(BaseModel):
+    """Model for chat requests."""
+    query: str = Field(..., description="The user's question about the paper", min_length=1, max_length=1000)
+    
+    @validator('query')
+    def validate_query(cls, v):
+        """Validate that the query is not empty and is a reasonable length."""
+        if len(v.strip()) == 0:
+            raise ValueError("Query cannot be empty")
+        return v
+
+class ChatResponse(BaseModel):
+    """Model for chat responses."""
+    response: str = Field(..., description="The AI-generated response to the query")
+    query: str = Field(..., description="The original query that was asked")
+    sources: List[ChatSourceChunk] = Field(..., description="The source chunks used to generate the response")
+    paper_id: UUID = Field(..., description="The ID of the paper that was queried") 
