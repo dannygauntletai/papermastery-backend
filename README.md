@@ -106,11 +106,35 @@ papermastery-backend/
 
 ## API Endpoints
 
+### General Endpoints
+
+- `GET /`: Root endpoint that returns a welcome message and verifies the API is running
+- `GET /health`: Health check endpoint for monitoring and deployment platforms
+
+### Paper Management
+
 - `POST /api/v1/papers/submit`: Submit an arXiv paper for processing
-- `GET /api/v1/papers/{id}`: Get paper details
-- `GET /api/v1/papers/{id}/learning-path`: Get a personalized learning path
-- `GET /api/v1/papers/{id}/summaries`: Get tiered summaries (beginner, intermediate, advanced)
-- `POST /api/v1/learning-items/{id}/feedback`: Submit feedback on learning materials
+  - Takes an arXiv link and starts background processing
+  - Returns the basic paper information and a processing status
+  
+- `GET /api/v1/papers/{paper_id}`: Get detailed information for a specific paper
+  - Includes metadata, processing status, and generated content when available
+  
+- `GET /api/v1/papers`: List all papers that have been submitted to the system
+  - Returns a collection of paper records with their metadata and processing status
+  
+- `GET /api/v1/papers/{paper_id}/summaries`: Get tiered summaries for a specific paper
+  - Returns beginner, intermediate, and advanced level summaries
+  - These summaries are generated during the background processing stage
+
+### Background Processing
+
+The API includes background processing for:
+- Downloading PDFs from arXiv
+- Extracting and chunking text
+- Generating embeddings and storing them in Pinecone
+- Finding related papers via the OpenAlex API
+- Generating multi-tiered summaries
 
 ## API Documentation
 
