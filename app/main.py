@@ -5,6 +5,7 @@ from fastapi.routing import APIRoute
 from app.dependencies import validate_environment
 from app.api.v1.endpoints.papers import router as papers_router
 from app.api.v1.endpoints.chat import router as chat_router
+from app.api.v1.endpoints.learning import router as learning_router
 import inspect
 from typing import Callable, Dict, Any, List, Optional
 import time
@@ -12,7 +13,7 @@ import time
 
 # Use the standard APIRoute instead of a patched version
 app = FastAPI(
-    title="ArXiv Mastery API",
+    title="PaperMastery API",
     description=(
         "API for transforming arXiv papers into personalized learning experiences. "
         "This service fetches academic papers from arXiv, processes them into tiered "
@@ -85,6 +86,7 @@ async def health_check():
 # Include API routers - use standard APIRoute
 app.include_router(papers_router, prefix="/api/v1")
 app.include_router(chat_router, prefix="/api/v1")
+app.include_router(learning_router, prefix="/api/v1")
 
 # Custom OpenAPI schema to properly document the API
 def custom_openapi():
@@ -119,13 +121,16 @@ def custom_openapi():
     * **Tiered Summaries**: Get beginner, intermediate, and advanced summaries
     * **Learning Paths**: Generate customized learning paths based on papers
     * **Interactive Chat**: Ask questions about papers and get AI-generated answers
+    * **Learning Materials**: Access text, videos, flashcards, and quizzes for papers
+    * **Progress Tracking**: Track your learning progress and quiz results
     
     ## Technology Stack:
     
     * **Backend**: FastAPI, Python, Pydantic
     * **Vector Database**: Pinecone for semantic search and related papers
     * **Storage**: Supabase for paper metadata and summaries
-    * **NLP**: OpenAI GPT models for summarization and chat
+    * **NLP**: OpenAI GPT models for summarization, chat, flashcards, and quizzes
+    * **External APIs**: YouTube API for educational videos
     
     ## API Usage Guide:
     
@@ -135,6 +140,11 @@ def custom_openapi():
     4. **Get Summaries**: GET `/api/v1/papers/{paper_id}/summaries` for tiered summaries
     5. **Get Related Papers**: GET `/api/v1/papers/{paper_id}/related` for similar papers
     6. **Chat with Paper**: POST to `/api/v1/chat/{paper_id}` with your question
+    7. **Get Learning Path**: GET `/api/v1/learning/papers/{paper_id}/learning-path` for a personalized learning path
+    8. **Get Learning Materials**: GET `/api/v1/learning/papers/{paper_id}/materials` for all learning materials
+    9. **Filter by Difficulty**: GET `/api/v1/learning/papers/{paper_id}/materials?difficulty_level=1` for beginner content
+    10. **Track Progress**: POST to `/api/v1/learning/learning-items/{item_id}/progress` to record your progress
+    11. **Take Quizzes**: POST to `/api/v1/learning/questions/{question_id}/answer` to submit quiz answers
     
     ## Paper Processing Status:
     
@@ -145,12 +155,29 @@ def custom_openapi():
     * **completed**: All processing finished, all features available
     * **failed**: Processing encountered an error
     
+    ## Learning Material Types:
+    
+    * **text**: Explanatory content about different aspects of the paper
+    * **video**: Educational YouTube videos related to the paper topics
+    * **flashcard**: Memory cards for spaced repetition learning
+    * **quiz**: Multiple-choice questions to test understanding
+    
+    ## Difficulty Levels:
+    
+    * **1**: Beginner level content for those new to the subject
+    * **2**: Intermediate level content for those with some background
+    * **3**: Advanced level content for deeper understanding
+    
     ## Data Models:
     
     * **PaperResponse**: Complete paper with metadata, summaries, and related papers
     * **PaperSummary**: Tiered summaries at beginner, intermediate, and advanced levels
     * **ChatRequest**: Question about a paper
     * **ChatResponse**: AI-generated answer with source references
+    * **LearningPath**: Personalized learning path for a paper
+    * **LearningItem**: Individual learning materials (text, video, flashcard, quiz)
+    * **UserProgressRecord**: User progress on learning items
+    * **AnswerResult**: Results of submitted answers to quiz questions
     """
     
     # Add paper schema
@@ -196,24 +223,62 @@ def custom_openapi():
             },
             "publication_date": {
                 "type": "string",
-                "format": "date-time",
+                "format": "date",
                 "description": "Publication date of the paper"
+            },
+            "last_updated_date": {
+                "type": "string",
+                "format": "date",
+                "description": "Last updated date of the paper"
             },
             "categories": {
                 "type": "array",
-                "nullable": True,
                 "items": {
                     "type": "string"
                 },
                 "description": "ArXiv categories of the paper"
             },
+            "doi": {
+                "type": "string",
+                "description": "Digital Object Identifier"
+            },
+            "journal_ref": {
+                "type": "string",
+                "description": "Journal reference"
+            },
+            "pdf_url": {
+                "type": "string",
+                "format": "uri",
+                "description": "URL to the PDF of the paper"
+            },
             "tags": {
-                "type": "array",
-                "nullable": True,
-                "items": {
-                    "type": "string"
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "processing", "completed", "failed"],
+                        "description": "Processing status of the paper"
+                    }
                 },
-                "description": "Tags categorizing the paper content"
+                "description": "Additional metadata and tags for the paper"
+            },
+            "summaries": {
+                "type": "object",
+                "properties": {
+                    "beginner": {
+                        "type": "string",
+                        "description": "Beginner-level summary"
+                    },
+                    "intermediate": {
+                        "type": "string",
+                        "description": "Intermediate-level summary"
+                    },
+                    "advanced": {
+                        "type": "string",
+                        "description": "Advanced-level summary"
+                    }
+                },
+                "description": "Tiered summaries of the paper"
             }
         }
     }
@@ -242,70 +307,171 @@ def custom_openapi():
     openapi_schema["components"]["schemas"]["LearningPath"] = {
         "type": "object",
         "properties": {
+            "id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Unique identifier for the learning path"
+            },
             "paper_id": {
                 "type": "string",
                 "format": "uuid",
-                "description": "The ID of the paper"
+                "description": "ID of the paper this learning path is for"
             },
-            "materials": {
+            "title": {
+                "type": "string",
+                "description": "Title of the learning path"
+            },
+            "description": {
+                "type": "string",
+                "description": "Description of the learning path"
+            },
+            "items": {
                 "type": "array",
                 "items": {
-                    "type": "object",
-                    "properties": {
-                        "id": {
-                            "type": "string",
-                            "format": "uuid",
-                            "description": "Unique identifier for the learning material"
-                        },
-                        "type": {
-                            "type": "string",
-                            "enum": ["video", "article", "book", "course", "exercise"],
-                            "description": "Type of learning material"
-                        },
-                        "title": {
-                            "type": "string",
-                            "description": "Title of the learning material"
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": "Description of the learning material"
-                        },
-                        "url": {
-                            "type": "string",
-                            "format": "uri",
-                            "description": "URL to the learning material"
-                        },
-                        "level": {
-                            "type": "string",
-                            "enum": ["beginner", "intermediate", "advanced"],
-                            "description": "Difficulty level of the material"
-                        },
-                        "estimated_time_minutes": {
-                            "type": "integer",
-                            "description": "Estimated time to complete in minutes"
-                        },
-                        "prerequisites": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            },
-                            "description": "Prerequisites for this material"
-                        }
-                    }
+                    "$ref": "#/components/schemas/LearningItem"
                 },
-                "description": "List of learning materials in the path"
+                "description": "List of learning items in this path"
             },
-            "estimated_total_time_minutes": {
-                "type": "integer",
-                "description": "Total estimated time to complete the learning path"
-            },
-            "last_modified": {
+            "created_at": {
                 "type": "string",
                 "format": "date-time",
-                "description": "When the learning path was last modified (matches publication date)"
+                "description": "When this learning path was created"
+            },
+            "estimated_time_minutes": {
+                "type": "integer",
+                "description": "Estimated time to complete the learning path in minutes"
             }
         },
-        "description": "A structured learning path based on a paper"
+        "required": ["id", "paper_id", "title", "description", "items", "created_at", "estimated_time_minutes"]
+    }
+    
+    # Add learning item schema
+    openapi_schema["components"]["schemas"]["LearningItem"] = {
+        "type": "object",
+        "properties": {
+            "id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Unique identifier for the learning item"
+            },
+            "paper_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "ID of the paper this item is for"
+            },
+            "type": {
+                "type": "string",
+                "enum": ["text", "video", "flashcard", "quiz"],
+                "description": "Type of learning material"
+            },
+            "title": {
+                "type": "string",
+                "description": "Title of the learning item"
+            },
+            "content": {
+                "type": "string",
+                "description": "Content of the learning item (text, question, front of flashcard, etc.)"
+            },
+            "metadata": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": "Additional metadata specific to the item type (e.g., video URL, quiz options, etc.)"
+            },
+            "difficulty_level": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3,
+                "description": "Difficulty level (1: beginner, 2: intermediate, 3: advanced)"
+            }
+        },
+        "required": ["id", "paper_id", "type", "title", "content", "difficulty_level"]
+    }
+    
+    # Add user progress record schema
+    openapi_schema["components"]["schemas"]["UserProgressRecord"] = {
+        "type": "object",
+        "properties": {
+            "id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Unique identifier for the progress record"
+            },
+            "user_id": {
+                "type": "string",
+                "description": "ID of the user"
+            },
+            "item_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "ID of the learning item"
+            },
+            "status": {
+                "type": "string",
+                "enum": ["not_started", "in_progress", "completed"],
+                "description": "Status of progress on this item"
+            },
+            "time_spent_seconds": {
+                "type": "integer",
+                "description": "Time spent on this item in seconds"
+            },
+            "timestamp": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When this progress was recorded"
+            }
+        },
+        "required": ["id", "user_id", "item_id", "status", "time_spent_seconds", "timestamp"]
+    }
+    
+    # Add quiz answer schema
+    openapi_schema["components"]["schemas"]["QuizAnswer"] = {
+        "type": "object",
+        "properties": {
+            "selected_answer": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Index of the selected answer option"
+            }
+        },
+        "required": ["selected_answer"]
+    }
+    
+    # Add answer result schema
+    openapi_schema["components"]["schemas"]["AnswerResult"] = {
+        "type": "object",
+        "properties": {
+            "is_correct": {
+                "type": "boolean",
+                "description": "Whether the answer is correct"
+            },
+            "correct_answer": {
+                "type": "integer",
+                "description": "Index of the correct answer option"
+            },
+            "explanation": {
+                "type": "string",
+                "description": "Explanation of the correct answer"
+            },
+            "user_id": {
+                "type": "string",
+                "description": "ID of the user who submitted the answer"
+            },
+            "question_id": {
+                "type": "string",
+                "format": "uuid",
+                "description": "ID of the question"
+            },
+            "selected_answer": {
+                "type": "integer",
+                "description": "Index of the answer selected by the user"
+            },
+            "timestamp": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the answer was submitted"
+            }
+        },
+        "required": ["is_correct", "correct_answer", "explanation", "user_id", "question_id", "selected_answer", "timestamp"]
     }
     
     # Define endpoint tags for better organization
@@ -440,6 +606,55 @@ def custom_openapi():
                     openapi_schema["paths"][path][method]["description"] = (
                         "Get related papers for a specific paper. Returns 404 if related papers "
                         "are not yet identified or if none are found."
+                    )
+        # Learning API documentation
+        elif path.endswith("/learning-path"):
+            for method in openapi_schema["paths"][path]:
+                if method == "get":
+                    openapi_schema["paths"][path][method]["description"] = (
+                        "Get or generate a personalized learning path for a paper. The learning path includes "
+                        "various types of learning materials (text, videos, flashcards, quizzes) organized in "
+                        "a meaningful sequence with estimated time to complete."
+                    )
+                elif method == "post":
+                    openapi_schema["paths"][path][method]["description"] = (
+                        "Force regeneration of a new learning path for a paper. This will clear any cached "
+                        "learning path and generate a fresh one with new materials."
+                    )
+        elif path.endswith("/materials") and "difficulty_level" in str(openapi_schema["paths"][path]):
+            for method in openapi_schema["paths"][path]:
+                if method == "get":
+                    openapi_schema["paths"][path][method]["description"] = (
+                        "Get learning materials for a paper, with optional filtering by difficulty level (1-3). "
+                        "Returns all learning items associated with the paper, organized by type and difficulty."
+                    )
+        elif "/learning-items/{item_id}" in path and not path.endswith("/progress"):
+            for method in openapi_schema["paths"][path]:
+                if method == "get":
+                    openapi_schema["paths"][path][method]["description"] = (
+                        "Get a specific learning item by ID. Returns the complete details of the learning item, "
+                        "including its content, type, and metadata."
+                    )
+        elif path.endswith("/progress"):
+            for method in openapi_schema["paths"][path]:
+                if method == "post":
+                    openapi_schema["paths"][path][method]["description"] = (
+                        "Record a user's progress on a learning item. This tracks completion status and time spent, "
+                        "which can be used to generate progress reports and personalized recommendations."
+                    )
+        elif "/questions/{question_id}/answer" in path:
+            for method in openapi_schema["paths"][path]:
+                if method == "post":
+                    openapi_schema["paths"][path][method]["description"] = (
+                        "Submit an answer to a quiz question and get immediate feedback. Returns whether the "
+                        "answer is correct, the correct answer, and an explanation of the answer."
+                    )
+        elif path.endswith("/user/progress"):
+            for method in openapi_schema["paths"][path]:
+                if method == "get":
+                    openapi_schema["paths"][path][method]["description"] = (
+                        "Get a user's progress on learning materials, optionally filtered by paper. "
+                        "Returns a list of progress records with status and time spent information."
                     )
     
     # Make args and kwargs optional in schema
