@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks, Query
+from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks, Query, Request
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 
@@ -14,12 +14,13 @@ from app.database.supabase_client import (
     get_paper_by_id,
     insert_paper,
     update_paper,
-    list_papers as db_list_papers
+    list_papers as db_list_papers,
+    add_paper_to_user
 )
 from app.services.chunk_service import chunk_text
 from app.services.pinecone_service import store_chunks
 from app.services.summarization_service import generate_summaries
-from app.dependencies import validate_environment
+from app.dependencies import validate_environment, get_current_user
 
 logger = get_logger(__name__)
 
@@ -34,6 +35,7 @@ router = APIRouter(
 async def submit_paper(
     paper_submission: PaperSubmission,
     background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user),
     # args: Optional[str] = Query(None, description="Not required"),
     # kwargs: Optional[str] = Query(None, description="Not required")
 ):
@@ -46,13 +48,14 @@ async def submit_paper(
     Args:
         paper_submission: The submission request containing the arXiv link
         background_tasks: FastAPI background tasks
+        user_id: The ID of the authenticated user
         # args: Optional arguments (system use only)
         # kwargs: Optional keyword arguments (system use only)
         
     Returns:
         The paper data with processing status
     """
-    logger.info(f"Received paper submission: {paper_submission.arxiv_link}")
+    logger.info(f"Received paper submission from user {user_id}: {paper_submission.arxiv_link}")
     
     # Extract arXiv ID from the URL
     url_str = str(paper_submission.arxiv_link)
@@ -63,7 +66,8 @@ async def submit_paper(
     # Check if paper already exists
     existing_paper = await get_paper_by_arxiv_id(arxiv_id)
     if existing_paper:
-        logger.info(f"Paper with arXiv ID {arxiv_id} already exists, returning existing paper")
+        logger.info(f"Paper with arXiv ID {arxiv_id} already exists, adding to user's papers")
+        await add_paper_to_user(user_id, existing_paper["id"])
         return existing_paper
     
     # Fetch paper metadata from arXiv
@@ -83,6 +87,9 @@ async def submit_paper(
     }
     
     new_paper = await insert_paper(paper_data)
+    
+    # Associate paper with user
+    await add_paper_to_user(user_id, new_paper["id"])
     
     # Process paper in background
     background_tasks.add_task(
@@ -130,21 +137,23 @@ async def get_paper(
 
 @router.get("/", response_model=List[PaperResponse])
 async def list_papers(
+    user_id: str = Depends(get_current_user),
     # args: Optional[str] = Query(None, description="Not required"),
     # kwargs: Optional[str] = Query(None, description="Not required")
 ):
     """
-    List all submitted papers.
+    List papers for the authenticated user.
     
     Args:
+        user_id: The ID of the authenticated user
         # args: Optional arguments (system use only)
         # kwargs: Optional keyword arguments (system use only)
         
     Returns:
-        List of papers
+        List of papers associated with the user
     """
-    papers = await db_list_papers()
-    logger.info(f"Retrieved {len(papers)} papers")
+    papers = await db_list_papers(user_id)
+    logger.info(f"Retrieved {len(papers)} papers for user {user_id}")
     return papers
 
 

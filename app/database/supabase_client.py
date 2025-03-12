@@ -119,20 +119,66 @@ async def update_paper(paper_id: UUID, update_data: Dict[str, Any]) -> Dict[str,
         raise SupabaseError(f"Error updating paper with ID {paper_id}: {str(e)}")
 
 
-async def list_papers() -> List[Dict[str, Any]]:
+async def list_papers(user_id: str) -> List[Dict[str, Any]]:
     """
-    List all papers in the Supabase database.
+    List papers for a specific user from the Supabase database.
     
+    Args:
+        user_id: The ID of the user
+        
     Returns:
-        List of papers
+        List of papers associated with the user
         
     Raises:
         SupabaseError: If there's an error listing papers
     """
     try:
-        response = supabase.table("papers").select("*").order("publication_date", desc=True).execute()
+        # First get the paper IDs for this user
+        user_papers_response = (
+            supabase.table("users_papers")
+            .select("paper_id")
+            .eq("user_id", user_id)
+            .execute()
+        )
         
-        return response.data
+        if not user_papers_response.data:
+            return []
+            
+        # Extract paper IDs
+        paper_ids = [up["paper_id"] for up in user_papers_response.data]
+        
+        # Then get the actual papers
+        papers_response = (
+            supabase.table("papers")
+            .select("*")
+            .in_("id", paper_ids)
+            .order("publication_date", desc=True)
+            .execute()
+        )
+        
+        return papers_response.data
     except Exception as e:
-        logger.error(f"Error listing papers: {str(e)}")
-        raise SupabaseError(f"Error listing papers: {str(e)}") 
+        logger.error(f"Error listing papers for user {user_id}: {str(e)}")
+        raise SupabaseError(f"Error listing papers for user {user_id}: {str(e)}")
+
+
+async def add_paper_to_user(user_id: str, paper_id: str) -> None:
+    """
+    Associate a paper with a user in the users_papers table.
+    
+    Args:
+        user_id: The ID of the user
+        paper_id: The ID of the paper
+        
+    Raises:
+        SupabaseError: If there's an error adding the association
+    """
+    try:
+        response = supabase.table("users_papers").insert({
+            "user_id": user_id,
+            "paper_id": paper_id
+        }).execute()
+        logger.info(f"Added paper {paper_id} to user {user_id}")
+    except Exception as e:
+        logger.error(f"Error adding paper {paper_id} to user {user_id}: {str(e)}")
+        raise SupabaseError(f"Error adding paper {paper_id} to user {user_id}: {str(e)}") 
