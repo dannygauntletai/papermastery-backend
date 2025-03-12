@@ -258,4 +258,27 @@ async def insert_message(message_data: Dict[str, Any]) -> Dict[str, Any]:
         return response.data[0]
     except Exception as e:
         logger.error(f"Error inserting message: {str(e)}")
-        raise SupabaseError(f"Error inserting message: {str(e)}") 
+        raise SupabaseError(f"Error inserting message: {str(e)}")
+
+
+async def get_conversation_messages(conversation_id: str) -> List[Dict[str, Any]]:
+    """
+    Retrieve all messages for a specific conversation from the Supabase database.
+    
+    Args:
+        conversation_id: The ID of the conversation
+        
+    Returns:
+        List of messages for the conversation, ordered by creation timestamp
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the messages
+    """
+    try:
+        response = supabase.table("messages").select("*").eq("conversation_id", conversation_id).order("created_at").execute()
+        
+        logger.info(f"Retrieved {len(response.data)} messages for conversation {conversation_id}")
+        return response.data
+    except Exception as e:
+        logger.error(f"Error retrieving messages for conversation {conversation_id}: {str(e)}")
+        raise SupabaseError(f"Error retrieving messages for conversation {conversation_id}: {str(e)}") 

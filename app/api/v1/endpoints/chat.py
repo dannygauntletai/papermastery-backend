@@ -2,9 +2,9 @@ from fastapi import APIRouter, HTTPException, Depends, status, Request, Query
 from typing import List, Dict, Any, Optional
 from uuid import UUID
 
-from app.api.v1.models import ChatRequest, ChatResponse
+from app.api.v1.models import ChatRequest, ChatResponse, MessageResponse
 from app.core.logger import get_logger
-from app.database.supabase_client import get_paper_by_id, insert_message, get_conversation, create_conversation
+from app.database.supabase_client import get_paper_by_id, insert_message, get_conversation, create_conversation, get_conversation_messages
 from app.services.pinecone_service import search_similar_chunks
 from app.services.llm_service import generate_response, mock_generate_response
 from app.dependencies import validate_environment, rate_limit, get_current_user
@@ -181,4 +181,59 @@ async def chat_with_paper(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error generating chat response: {str(e)}"
+        )
+
+@router.get("/{paper_id}/messages", response_model=List[MessageResponse])
+async def get_paper_messages(
+    paper_id: UUID,
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Retrieve all messages for a paper's conversation.
+    
+    Args:
+        paper_id: The UUID of the paper
+        user_id: The ID of the authenticated user
+        
+    Returns:
+        A list of messages for the paper's conversation
+        
+    Raises:
+        HTTPException: If paper not found or other errors occur
+    """
+    logger.info(f"Fetching messages for paper {paper_id}")
+    
+    # Get the paper
+    paper = await get_paper_by_id(paper_id)
+    if not paper:
+        logger.error(f"Paper not found: {paper_id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Paper with ID {paper_id} not found"
+        )
+    
+    # The conversation ID is the same as the paper ID
+    conversation_id = str(paper_id)
+    
+    try:
+        # Get messages for the conversation
+        messages = await get_conversation_messages(conversation_id)
+        
+        # Convert to response model format
+        return [
+            MessageResponse(
+                id=message.get("id"),
+                text=message.get("text"),
+                sender=message.get("sender"),
+                created_at=message.get("created_at"),
+                paper_id=message.get("paper_id"),
+                conversation_id=message.get("conversation_id")
+            )
+            for message in messages
+        ]
+    except Exception as e:
+        logger.error(f"Error retrieving messages for paper {paper_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving messages: {str(e)}"
         ) 
