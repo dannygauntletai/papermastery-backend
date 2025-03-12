@@ -27,7 +27,8 @@ logger = get_logger(__name__)
 router = APIRouter(
     prefix="/papers",
     tags=["papers"],
-    dependencies=[Depends(validate_environment)]
+    dependencies=[Depends(validate_environment)],
+    responses={404: {"description": "Paper not found"}},
 )
 
 

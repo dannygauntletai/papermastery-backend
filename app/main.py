@@ -30,9 +30,15 @@ app = FastAPI(
         "API for transforming arXiv papers into personalized learning experiences. "
         "This service fetches academic papers from arXiv, processes them into tiered "
         "learning materials (beginner, intermediate, advanced), and provides "
-        "interactive learning paths with multimedia integration."
+        "interactive learning paths with multimedia integration.\n\n"
+        "Key features:\n"
+        "- PDF processing and chunking with LangChain\n"
+        "- Vector embeddings using OpenAI's text-embedding-3-large model\n"
+        "- RAG (Retrieval-Augmented Generation) for context-aware chat\n"
+        "- Tiered summaries for different expertise levels\n"
+        "- Pinecone vector database integration with namespace-based organization"
     ),
-    version="0.1.0",
+    version="0.2.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_tags=[
@@ -46,7 +52,7 @@ app = FastAPI(
         },
         {
             "name": "chat",
-            "description": "Chat with papers, ask questions, and get AI-generated answers"
+            "description": "Chat with papers using RAG (Retrieval-Augmented Generation) to get AI-generated answers"
         },
         {
             "name": "system",

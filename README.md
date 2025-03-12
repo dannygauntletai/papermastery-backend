@@ -17,8 +17,9 @@ ArXiv Mastery Platform solves the challenge of understanding complex academic pa
 - **Database**: Supabase (PostgreSQL)
 - **Authentication**: Supabase Auth
 - **Vector Database**: Pinecone (for embedding storage and retrieval)
-- **Text Processing**: PyPDF2, Sentence Transformers
+- **Text Processing**: PyPDF2, LangChain, OpenAI embeddings
 - **APIs**: arXiv API, OpenAlex, Connected Papers, Semantic Scholar
+- **LLM Integration**: OpenAI API (GPT-4o)
 
 ## Getting Started
 
@@ -26,7 +27,8 @@ ArXiv Mastery Platform solves the challenge of understanding complex academic pa
 
 - Python 3.8+
 - Supabase account
-- Pinecone account
+- Pinecone account (with a properly configured index)
+- OpenAI API key
 
 ### Installation
 
@@ -49,7 +51,25 @@ ArXiv Mastery Platform solves the challenge of understanding complex academic pa
 
 4. Configure your environment variables:
    - Copy `.env.example` to `.env`
-   - Fill in the required API keys and configuration values
+   - Fill in the required API keys and configuration values:
+   
+   ```
+   # OpenAI API
+   OPENAI_API_KEY=your_openai_api_key
+   OPENAI_MODEL=gpt-4o
+   
+   # Pinecone
+   PINECONE_API_KEY=your_pinecone_api_key
+   PINECONE_ENVIRONMENT=your_pinecone_environment (e.g., us-east-1)
+   PINECONE_INDEX=your_pinecone_index_name
+   
+   # Supabase
+   SUPABASE_URL=your_supabase_url
+   SUPABASE_KEY=your_supabase_key
+   
+   # YouTube API (for learning features)
+   YOUTUBE_API_KEY=your_youtube_api_key
+   ```
 
 ### Running the Application
 
@@ -131,18 +151,25 @@ papermastery-backend/
   - Returns a list of related papers with their metadata
   - Uses the OpenAlex API to find papers that cite or are conceptually similar to the given paper
 
-### Background Processing
+### Chat API Endpoints
 
-The API includes background processing for:
-- Downloading PDFs from arXiv
-- Extracting and chunking text
-- Generating embeddings and storing them in Pinecone
-- Finding related papers via the OpenAlex API
-- Generating multi-tiered summaries
+The application includes a conversational interface for interacting with academic papers:
 
-## Learning API Endpoints
+- `POST /api/v1/papers/{paper_id}/chat`: Ask questions about a specific paper
+  - Uses RAG (Retrieval-Augmented Generation) to provide context-aware answers
+  - Retrieves relevant chunks from the paper using Pinecone vector search
+  - Generates human-like responses using OpenAI's GPT models
 
-The PaperMastery backend now includes Learning API endpoints that provide personalized learning materials based on academic papers. These endpoints support:
+Example request:
+```json
+{
+  "query": "What are the main conclusions of this paper?"
+}
+```
+
+### Learning API Endpoints
+
+The PaperMastery backend includes Learning API endpoints that provide personalized learning materials based on academic papers. These endpoints support:
 
 - Generation of personalized learning paths for papers
 - Access to various learning materials (text, videos, flashcards, quizzes)
@@ -162,32 +189,55 @@ The PaperMastery backend now includes Learning API endpoints that provide person
 | `/api/v1/learning/user/progress` | GET | Get a user's progress on learning materials |
 | `/api/v1/learning/papers/{paper_id}/generate-learning-path` | POST | Force generation of a new learning path |
 
-### External API Integrations
+### Background Processing
 
-The learning service integrates with several external APIs to provide rich educational content:
+The API includes background processing for:
+- Downloading PDFs from arXiv
+- Extracting and chunking text
+- Generating embeddings and storing them in Pinecone
+- Finding related papers via the OpenAlex API
+- Generating multi-tiered summaries
+
+## External API Integrations
+
+The application integrates with several external APIs to provide rich features:
+
+- **OpenAI API**: For embeddings generation and text completion
+  - Used for generating embeddings with `text-embedding-3-large` model (3072 dimensions)
+  - Used for text generation with GPT models (default: gpt-4o)
+
+- **Pinecone API**: For vector storage and similarity search
+  - Uses namespaces to organize vectors by paper ID
+  - Supports fallback index creation if dimension mismatch occurs
+  - Provides similarity search for RAG implementation
 
 - **YouTube API**: Fetches relevant educational videos
-- **OpenAI API**: Generates flashcards and quiz questions
+  - Used in the learning service to enhance learning materials
 
-### Environment Variables
+## Environment Variables
 
-Add the following environment variables to your `.env` file:
+The application uses the following environment variables:
 
 ```
-# YouTube API
-YOUTUBE_API_KEY=your_youtube_api_key
-
-# OpenAI API (if not already configured)
+# OpenAI API (required)
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL=gpt-4o
-```
 
-### Testing the Learning API
+# Pinecone (required)
+PINECONE_API_KEY=your_pinecone_api_key
+PINECONE_ENVIRONMENT=your_pinecone_environment (e.g., us-east-1)
+PINECONE_INDEX=your_pinecone_index_name
 
-Run the tests for the learning API endpoints:
+# Supabase (required)
+SUPABASE_URL=your_supabase_url
+SUPABASE_KEY=your_supabase_key
 
-```bash
-pytest tests/test_learning.py -v
+# YouTube API (optional, for learning features)
+YOUTUBE_API_KEY=your_youtube_api_key
+
+# Application settings (optional)
+APP_ENV=development  # Options: development, testing, production
+LOG_LEVEL=INFO       # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 ```
 
 ## API Documentation
@@ -229,6 +279,26 @@ We follow PEP 8 style guidelines. Run linting with:
 flake8
 ```
 
+## LangChain Integration
+
+The application uses LangChain for PDF processing and vector storage:
+
+- **PDF Processing**: Uses LangChain's PyPDFLoader to load and process PDFs
+- **Text Chunking**: Uses LangChain's RecursiveCharacterTextSplitter for intelligent text chunking
+- **Embeddings**: Uses LangChain's OpenAIEmbeddings for generating embeddings
+- **Vector Storage**: Uses LangChain's PineconeVectorStore for storing and retrieving embeddings
+- **RAG Implementation**: Uses LangChain's similarity search capabilities for retrieval-augmented generation
+
+The system supports fallback from LangChain methods to direct Pinecone/OpenAI implementations for robustness.
+
+## Recent Updates
+
+- **Improved OpenAI API Key Handling**: Enhanced environment variable loading to ensure consistent API key usage across services
+- **Updated Pinecone Integration**: Migrated to the latest Pinecone SDK and implemented improved error handling
+- **Enhanced Vector Search**: Improved chunking and embedding strategies for more accurate retrieval
+- **LangChain Integration**: Added deeper integration with LangChain for PDF processing and RAG implementation
+- **Dimension Handling**: Added automatic dimension matching for embeddings to ensure compatibility with Pinecone indexes
+
 ## License
 
 [MIT License](LICENSE)
@@ -238,12 +308,5 @@ flake8
 - [arXiv](https://arxiv.org/) for providing access to research papers
 - [Supabase](https://supabase.io/) for database and authentication
 - [Pinecone](https://www.pinecone.io/) for vector search capabilities
-
-## LangChain Integration
-
-The application uses LangChain for PDF processing and vector storage:
-
-- **PDF Processing**: Uses LangChain's PyPDFLoader to load and process PDFs
-- **Text Chunking**: Uses LangChain's RecursiveCharacterTextSplitter for intelligent text chunking
-- **Embeddings**: Uses LangChain's OpenAIEmbeddings for generating embeddings
-- **Vector Storage**: Uses LangChain's PineconeVectorStore for storing and retrieving embeddings 
+- [OpenAI](https://openai.com/) for powerful language models and embeddings
+- [LangChain](https://langchain.com/) for RAG components and PDF processing utilities 
