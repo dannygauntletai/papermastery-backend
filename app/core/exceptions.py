@@ -48,6 +48,20 @@ class LLMServiceError(ArXivMasteryException):
         self.message = f"LLM service error: {message}"
         super().__init__(self.message)
         
+class PDFDownloadError(ArXivMasteryException):
+    """Exception raised for errors in downloading PDFs."""
+    def __init__(self, message: str):
+        self.message = f"PDF download error: {message}"
+        super().__init__(self.message)
+
+class OpenAlexAPIError(ArXivMasteryException):
+    """Exception raised for errors in the OpenAlex API."""
+    pass
+
+class ProcessingError(ArXivMasteryException):
+    """Exception raised for errors in processing papers."""
+    pass
+
 # HTTP Exception Handlers
 def http_exception_handler(exc):
     """Convert ArXiv Mastery exceptions to appropriate HTTP exceptions."""
@@ -80,6 +94,21 @@ def http_exception_handler(exc):
         return HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=exc.message
+        )
+    elif isinstance(exc, PDFDownloadError):
+        return HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error downloading PDF"
+        )
+    elif isinstance(exc, OpenAlexAPIError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Error with OpenAlex API"
+        )
+    elif isinstance(exc, ProcessingError):
+        return HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error processing paper"
         )
     else:
         return HTTPException(

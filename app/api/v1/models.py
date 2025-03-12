@@ -77,6 +77,7 @@ class ChatSourceChunk(BaseModel):
 class ChatRequest(BaseModel):
     """Model for chat requests."""
     query: str = Field(..., description="The user's question about the paper", min_length=1, max_length=1000)
+    conversation_id: Optional[str] = Field(None, description="The ID of the conversation to associate the message with")
     
     @validator('query')
     def validate_query(cls, v):
@@ -91,6 +92,15 @@ class ChatResponse(BaseModel):
     query: str = Field(..., description="The original query that was asked")
     sources: List[ChatSourceChunk] = Field(..., description="The source chunks used to generate the response")
     paper_id: UUID = Field(..., description="The ID of the paper that was queried")
+
+class MessageResponse(BaseModel):
+    """Model for message responses in a conversation."""
+    id: str = Field(..., description="The unique identifier for the message")
+    text: str = Field(..., description="The content of the message")
+    sender: str = Field(..., description="The sender of the message (user or bot)")
+    created_at: str = Field(..., description="The timestamp when the message was created")
+    paper_id: str = Field(..., description="The ID of the paper associated with the message")
+    conversation_id: str = Field(..., description="The ID of the conversation the message belongs to")
 
 class LearningItemType(str, Enum):
     TEXT = "text"
