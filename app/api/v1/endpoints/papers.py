@@ -15,7 +15,8 @@ from app.database.supabase_client import (
     insert_paper,
     update_paper,
     list_papers as db_list_papers,
-    add_paper_to_user
+    add_paper_to_user,
+    create_conversation
 )
 from app.services.chunk_service import chunk_text
 from app.services.pinecone_service import store_chunks
@@ -69,6 +70,19 @@ async def submit_paper(
     if existing_paper:
         logger.info(f"Paper with arXiv ID {arxiv_id} already exists, adding to user's papers")
         await add_paper_to_user(user_id, existing_paper["id"])
+        
+        # Check if a conversation exists for this paper, create one if not
+        try:
+            # Create a conversation using the paper ID as the conversation ID
+            await create_conversation({
+                "id": existing_paper["id"],
+                "user_id": user_id
+            })
+            logger.info(f"Created conversation for existing paper with ID: {existing_paper['id']}")
+        except Exception as e:
+            # If the conversation already exists, this will fail, but we can continue
+            logger.warning(f"Could not create conversation for existing paper: {str(e)}")
+        
         return existing_paper
     
     # Fetch paper metadata from arXiv
@@ -91,6 +105,18 @@ async def submit_paper(
     
     # Associate paper with user
     await add_paper_to_user(user_id, new_paper["id"])
+    
+    # Create a conversation for this paper
+    try:
+        # Create a conversation using the paper ID as the conversation ID
+        await create_conversation({
+            "id": new_paper["id"],
+            "user_id": user_id
+        })
+        logger.info(f"Created conversation for new paper with ID: {new_paper['id']}")
+    except Exception as e:
+        logger.error(f"Error creating conversation for paper {new_paper['id']}: {str(e)}")
+        # Continue even if conversation creation fails
     
     # Process paper in background
     background_tasks.add_task(

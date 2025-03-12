@@ -4,10 +4,10 @@ from uuid import UUID
 
 from app.api.v1.models import ChatRequest, ChatResponse
 from app.core.logger import get_logger
-from app.database.supabase_client import get_paper_by_id
+from app.database.supabase_client import get_paper_by_id, insert_message, get_conversation, create_conversation
 from app.services.pinecone_service import search_similar_chunks
 from app.services.llm_service import generate_response, mock_generate_response
-from app.dependencies import validate_environment, rate_limit
+from app.dependencies import validate_environment, rate_limit, get_current_user
 from app.core.config import APP_ENV
 
 logger = get_logger(__name__)
@@ -23,6 +23,7 @@ async def chat_with_paper(
     paper_id: UUID,
     chat_request: ChatRequest,
     request: Request,
+    user_id: str = Depends(get_current_user),
     rate_limited: bool = Depends(rate_limit),
     # args: Optional[str] = Query(None, description="Not required"),
     # kwargs: Optional[str] = Query(None, description="Not required")
@@ -39,6 +40,7 @@ async def chat_with_paper(
         paper_id: The UUID of the paper
         chat_request: The chat request containing the query
         request: The FastAPI request object
+        user_id: The ID of the authenticated user
         rate_limited: Rate limiting dependency
         # args: Optional arguments (system use only)
         # kwargs: Optional keyword arguments (system use only)
@@ -68,6 +70,36 @@ async def chat_with_paper(
             detail="This paper has not been fully processed yet. Please try again later."
         )
     
+    # Ensure a conversation exists for this paper
+    conversation_id = str(paper_id)
+    conversation = await get_conversation(conversation_id)
+    if not conversation:
+        try:
+            # Create a conversation using the paper ID as the conversation ID
+            await create_conversation({
+                "id": conversation_id,
+                "user_id": user_id
+            })
+            logger.info(f"Created conversation for paper with ID: {paper_id}")
+        except Exception as e:
+            logger.warning(f"Could not create conversation for paper: {str(e)}")
+            # Continue even if conversation creation fails
+    
+    # Save the user message to the database
+    try:
+        user_message_data = {
+            "user_id": user_id,
+            "paper_id": str(paper_id),
+            "conversation_id": conversation_id,
+            "text": chat_request.query,
+            "sender": "user"
+        }
+        await insert_message(user_message_data)
+        logger.info(f"Saved user message for paper {paper_id}")
+    except Exception as e:
+        logger.error(f"Error saving user message: {str(e)}")
+        # Continue even if message saving fails
+    
     # Get relevant chunks from Pinecone
     try:
         relevant_chunks = await search_similar_chunks(
@@ -80,9 +112,26 @@ async def chat_with_paper(
             logger.warning(f"No relevant chunks found for query: {chat_request.query[:50]}...")
             
             # Return a default response
+            default_response = "I couldn't find specific information in this paper to answer your question. " \
+                              "Could you try asking something more specific about the paper's content?"
+            
+            # Save the bot message to the database
+            try:
+                bot_message_data = {
+                    "user_id": user_id,
+                    "paper_id": str(paper_id),
+                    "conversation_id": conversation_id,
+                    "text": default_response,
+                    "sender": "bot"
+                }
+                await insert_message(bot_message_data)
+                logger.info(f"Saved bot message for paper {paper_id}")
+            except Exception as e:
+                logger.error(f"Error saving bot message: {str(e)}")
+                # Continue even if message saving fails
+            
             return ChatResponse(
-                response="I couldn't find specific information in this paper to answer your question. "
-                        "Could you try asking something more specific about the paper's content?",
+                response=default_response,
                 query=chat_request.query,
                 sources=[],
                 paper_id=paper_id
@@ -96,6 +145,21 @@ async def chat_with_paper(
             context_chunks=relevant_chunks,
             paper_title=paper.get("title", "")
         )
+        
+        # Save the bot message to the database
+        try:
+            bot_message_data = {
+                "user_id": user_id,
+                "paper_id": str(paper_id),
+                "conversation_id": conversation_id,
+                "text": response_data["response"],
+                "sender": "bot"
+            }
+            await insert_message(bot_message_data)
+            logger.info(f"Saved bot message for paper {paper_id}")
+        except Exception as e:
+            logger.error(f"Error saving bot message: {str(e)}")
+            # Continue even if message saving fails
         
         # Construct the chat response
         return ChatResponse(

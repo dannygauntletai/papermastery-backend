@@ -181,4 +181,81 @@ async def add_paper_to_user(user_id: str, paper_id: str) -> None:
         logger.info(f"Added paper {paper_id} to user {user_id}")
     except Exception as e:
         logger.error(f"Error adding paper {paper_id} to user {user_id}: {str(e)}")
-        raise SupabaseError(f"Error adding paper {paper_id} to user {user_id}: {str(e)}") 
+        raise SupabaseError(f"Error adding paper {paper_id} to user {user_id}: {str(e)}")
+
+
+async def create_conversation(conversation_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create a conversation in the Supabase database.
+    
+    Args:
+        conversation_data: The conversation data to insert
+        
+    Returns:
+        The created conversation data
+        
+    Raises:
+        SupabaseError: If there's an error creating the conversation
+    """
+    try:
+        response = supabase.table("user_conversations").insert(conversation_data).execute()
+        
+        if len(response.data) == 0:
+            raise SupabaseError("Failed to create conversation: No data returned")
+            
+        logger.info(f"Conversation created with ID: {response.data[0]['id']}")
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error creating conversation: {str(e)}")
+        raise SupabaseError(f"Error creating conversation: {str(e)}")
+
+
+async def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve a conversation from the Supabase database by its ID.
+    
+    Args:
+        conversation_id: The ID of the conversation
+        
+    Returns:
+        The conversation data as a dictionary, or None if not found
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the conversation
+    """
+    try:
+        response = supabase.table("user_conversations").select("*").eq("id", conversation_id).execute()
+        
+        if len(response.data) == 0:
+            return None
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error retrieving conversation with ID {conversation_id}: {str(e)}")
+        raise SupabaseError(f"Error retrieving conversation with ID {conversation_id}: {str(e)}")
+
+
+async def insert_message(message_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Insert a message into the Supabase database.
+    
+    Args:
+        message_data: The message data to insert
+        
+    Returns:
+        The inserted message data
+        
+    Raises:
+        SupabaseError: If there's an error inserting the message
+    """
+    try:
+        response = supabase.table("messages").insert(message_data).execute()
+        
+        if len(response.data) == 0:
+            raise SupabaseError("Failed to insert message: No data returned")
+            
+        logger.info(f"Message inserted with ID: {response.data[0]['id']}")
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error inserting message: {str(e)}")
+        raise SupabaseError(f"Error inserting message: {str(e)}") 
