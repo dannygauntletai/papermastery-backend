@@ -594,32 +594,120 @@ async def delete_paper_embeddings(paper_id: UUID) -> bool:
         paper_id: The UUID of the paper
         
     Returns:
-        True if successful
+        True if successful, False otherwise
         
     Raises:
         PineconeError: If there's an error deleting embeddings
     """
-    if index is None:
+    global index
+    
+    if not index:
         logger.error("Pinecone index not initialized")
         raise PineconeError("Pinecone index not initialized")
     
     try:
-        logger.info(f"Deleting embeddings for paper ID: {paper_id}")
-        
         # Use the paper_id as the namespace
         namespace = str(paper_id)
         
         # Delete all vectors in the namespace
-        await asyncio.to_thread(
-            index.delete,
-            delete_all=True,
-            namespace=namespace
-        )
+        index.delete(namespace=namespace, delete_all=True)
         
-        logger.info(f"Successfully deleted embeddings for paper ID: {paper_id}")
-        
+        logger.info(f"Successfully deleted all embeddings for paper ID: {paper_id}")
         return True
         
     except Exception as e:
         logger.error(f"Error deleting embeddings for paper ID {paper_id}: {str(e)}")
-        raise PineconeError(f"Error deleting embeddings: {str(e)}") 
+        raise PineconeError(f"Error deleting embeddings: {str(e)}")
+
+
+async def get_all_paper_chunks(paper_id: UUID, limit: int = 1000) -> List[Dict[str, Any]]:
+    """
+    Retrieve all chunks for a paper from Pinecone.
+    
+    Args:
+        paper_id: The UUID of the paper
+        limit: Maximum number of chunks to retrieve
+        
+    Returns:
+        List of chunks with metadata
+        
+    Raises:
+        PineconeError: If there's an error retrieving chunks
+    """
+    global index
+    
+    if not index:
+        logger.error("Pinecone index not initialized")
+        raise PineconeError("Pinecone index not initialized")
+    
+    try:
+        # Use the paper_id as the namespace
+        namespace = str(paper_id)
+        
+        # Try using LangChain for retrieval if available
+        if langchain_embeddings is not None:
+            try:
+                # Determine which index to use
+                index_name = fallback_index_name if fallback_index_name in available_indexes else primary_index_name
+                
+                # Create a vector store instance
+                vector_store = PineconeVectorStore(
+                    index_name=index_name,
+                    embedding=langchain_embeddings,
+                    namespace=namespace
+                )
+                
+                # Get all documents in the namespace
+                # Since LangChain doesn't have a direct method to get all documents,
+                # we'll use a dummy query with a high limit
+                docs = await asyncio.to_thread(
+                    vector_store.similarity_search,
+                    query="",  # Empty query to get all documents
+                    k=limit    # High limit to get all documents
+                )
+                
+                # Format results
+                formatted_results = []
+                for doc in docs:
+                    formatted_results.append({
+                        "chunk_id": f"{doc.metadata.get('paper_id', 'unknown')}_chunk_{doc.metadata.get('chunk_index', 0)}",
+                        "metadata": doc.metadata,
+                        "text": doc.page_content
+                    })
+                
+                logger.info(f"Retrieved {len(formatted_results)} chunks for paper {paper_id} using LangChain")
+                return formatted_results
+                
+            except Exception as langchain_error:
+                logger.warning(f"LangChain retrieval failed, falling back to default method: {str(langchain_error)}")
+                # Fall back to the original method if LangChain fails
+        
+        # Fallback: Use Pinecone directly
+        # Since Pinecone doesn't have a direct method to get all vectors without a query,
+        # we'll use a dummy vector with a high limit
+        dummy_vector = [0.0] * vector_dimension  # Create a zero vector with the correct dimension
+        
+        # Query the index with the dummy vector
+        response = index.query(
+            namespace=namespace,
+            vector=dummy_vector,
+            top_k=limit,
+            include_metadata=True
+        )
+        
+        # Format results
+        formatted_results = []
+        for match in response.get("matches", []):
+            metadata = match.get("metadata", {})
+            formatted_results.append({
+                "chunk_id": match.get("id", "unknown"),
+                "metadata": metadata,
+                "text": metadata.get("text", "")
+            })
+        
+        logger.info(f"Retrieved {len(formatted_results)} chunks for paper {paper_id} using Pinecone directly")
+        return formatted_results
+        
+    except Exception as e:
+        logger.error(f"Error retrieving chunks for paper ID {paper_id}: {str(e)}")
+        raise PineconeError(f"Error retrieving chunks: {str(e)}") 

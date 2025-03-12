@@ -1,45 +1,70 @@
 from typing import List, Dict, Any, Optional
 import asyncio
-from uuid import UUID
-from openai import OpenAI, AsyncOpenAI
 import json
 import os
+import tempfile
+from uuid import UUID
+from openai import OpenAI, AsyncOpenAI
+import google.generativeai as genai
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Load environment variables from .env file
 load_dotenv()
 
 from app.core.logger import get_logger
-from app.core.config import OPENAI_API_KEY, OPENAI_MODEL, APP_ENV
+from app.core.config import OPENAI_API_KEY, OPENAI_MODEL, GEMINI_API_KEY, GEMINI_MODEL, APP_ENV
 from app.core.exceptions import LLMServiceError
+from app.database.supabase_client import get_paper_full_text
+from app.services.pdf_service import get_paper_pdf
 
 logger = get_logger(__name__)
 
-# Get API key directly from environment for consistency
-api_key = os.environ.get("OPENAI_API_KEY")
-if not api_key:
-    api_key = OPENAI_API_KEY
+# Get OpenAI API key directly from environment for consistency
+openai_api_key = os.environ.get("OPENAI_API_KEY")
+if not openai_api_key:
+    openai_api_key = OPENAI_API_KEY
     # Ensure it's also in the environment
-    os.environ["OPENAI_API_KEY"] = api_key
+    if openai_api_key:
+        os.environ["OPENAI_API_KEY"] = openai_api_key
+        logger.info(f"OpenAI client initialized with API key: {openai_api_key[:8]}... in llm_service.py")
 
-# Initialize the OpenAI client
-client = AsyncOpenAI(api_key=api_key)
-logger.info(f"OpenAI client initialized with API key: {api_key[:8]}... in llm_service.py")
+# Get Gemini API key directly from environment for consistency
+gemini_api_key = os.environ.get("GEMINI_API_KEY")
+if not gemini_api_key:
+    gemini_api_key = GEMINI_API_KEY
+    # Ensure it's also in the environment
+    if gemini_api_key:
+        os.environ["GEMINI_API_KEY"] = gemini_api_key
+        logger.info(f"Gemini client initialized with API key: {gemini_api_key[:8]}... in llm_service.py")
+
+# Initialize the OpenAI client if API key is available
+openai_client = None
+if openai_api_key:
+    openai_client = AsyncOpenAI(api_key=openai_api_key)
+    logger.info(f"OpenAI client initialized with API key: {openai_api_key[:8]}... in llm_service.py")
+
+# Initialize the Gemini client if API key is available
+if gemini_api_key:
+    genai.configure(api_key=gemini_api_key)
+    logger.info(f"Gemini client initialized with API key: {gemini_api_key[:8]}... in llm_service.py")
 
 async def generate_response(
     query: str,
     context_chunks: List[Dict[str, Any]],
     paper_title: Optional[str] = None,
-    max_tokens: int = 1000
+    max_tokens: int = 1000,
+    paper_id: Optional[UUID] = None
 ) -> Dict[str, Any]:
     """
-    Generate a response to a query using the OpenAI API.
+    Generate a response to a query using the Gemini API with direct PDF processing.
     
     Args:
         query: The user's query
-        context_chunks: List of text chunks with metadata to use as context
+        context_chunks: List of text chunks with metadata (kept for backward compatibility)
         paper_title: Optional title of the paper for context
         max_tokens: Maximum number of tokens in the response
+        paper_id: Optional UUID of the paper to retrieve the PDF
         
     Returns:
         Dictionary containing the generated response and metadata
@@ -50,61 +75,124 @@ async def generate_response(
     try:
         logger.info(f"Generating response for query: {query[:50]}...")
         
-        # Format context chunks as a string with citations
-        formatted_chunks = []
-        for i, chunk in enumerate(context_chunks):
-            # Use chunk_id if available, otherwise use a sequential number
-            chunk_id = chunk.get("chunk_id", f"chunk_{i}")
-            text = chunk.get("text", "")
-            
-            # Add the chunk to the formatted chunks with a citation marker
-            formatted_chunks.append(f"[{i+1}] {text}")
-            
-        # Join all formatted chunks with separators
-        context_text = "\n\n".join(formatted_chunks)
+        # If paper_id is provided, get the PDF
+        pdf_path = None
+        if paper_id:
+            try:
+                pdf_path = await get_paper_pdf(paper_id)
+                if pdf_path:
+                    logger.info(f"Retrieved PDF for paper {paper_id}: {pdf_path}")
+                else:
+                    logger.warning(f"Could not retrieve PDF for paper {paper_id}")
+            except Exception as e:
+                logger.warning(f"Error retrieving PDF for paper {paper_id}: {str(e)}")
+                # Continue with fallback if PDF retrieval fails
+        
+        # If PDF is available, use Gemini Files API
+        if pdf_path and gemini_api_key:
+            return await generate_response_with_pdf(query, pdf_path, paper_title, max_tokens)
+        
+        # Fallback: If PDF is not available or Gemini is not available, use the old method
+        logger.info("Falling back to text-based response generation")
+        
+        # Get full text if available
+        full_text = None
+        if paper_id:
+            try:
+                full_text = await get_paper_full_text(paper_id)
+                logger.info(f"Retrieved full text for paper {paper_id} ({len(full_text) if full_text else 0} characters)")
+            except Exception as e:
+                logger.warning(f"Error retrieving full text for paper {paper_id}: {str(e)}")
+                # Continue with chunks if full text retrieval fails
+        
+        # If full text is not available, use the context chunks
+        if not full_text:
+            logger.info(f"Full text not available, using {len(context_chunks)} context chunks")
+            # Format context chunks as a string with citations
+            formatted_chunks = []
+            for i, chunk in enumerate(context_chunks):
+                # Use chunk_id if available, otherwise use a sequential number
+                chunk_id = chunk.get("chunk_id", f"chunk_{i}")
+                text = chunk.get("text", "")
+                
+                # Add the chunk to the formatted chunks with a citation marker
+                formatted_chunks.append(f"[{i+1}] {text}")
+                
+            # Join all formatted chunks with separators
+            context_text = "\n\n".join(formatted_chunks)
+        else:
+            context_text = full_text
         
         # Construct the prompt
         paper_context = f" about the paper '{paper_title}'" if paper_title else ""
         
         prompt = f"""You are an AI research assistant. Answer the following question{paper_context} 
-using ONLY the information from the provided context chunks.
+using ONLY the information from the provided paper text.
 
-If the question cannot be answered using the context, say "I cannot answer this question based on the 
+If the question cannot be answered using the provided text, say "I cannot answer this question based on the 
 available information from the paper." and suggest what further information might be needed.
 
 Question: {query}
 
-Context:
+Paper Text:
 {context_text}
 
 Answer the question in a clear, concise manner. If appropriate, you may format your response using Markdown.
-If there are relevant parts of the context that directly support your answer, you may quote them by
-including the chunk number in square brackets, e.g., [1].
+If there are relevant parts of the text that directly support your answer, you may quote them.
+
+Your response should be structured as follows:
+1. A direct answer to the question
+2. Supporting evidence from the paper, with quotes and references to specific sections
+3. Any limitations or caveats to your answer based on the available information
 """
 
-        # Call the OpenAI API to generate a response
-        response = await client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[{"role": "system", "content": prompt}],
-            max_tokens=max_tokens,
-            temperature=0.3,  # Lower temperature for more deterministic responses
-        )
+        # Use Gemini if available, otherwise fall back to OpenAI
+        if gemini_api_key:
+            # Call the Gemini API to generate a response
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            response = await asyncio.to_thread(
+                model.generate_content,
+                prompt,
+                generation_config={
+                    "max_output_tokens": max_tokens,
+                    "temperature": 0.3,  # Lower temperature for more deterministic responses
+                }
+            )
+            
+            # Extract the response text
+            response_text = response.text.strip()
+        elif openai_api_key and openai_client:
+            # Fall back to OpenAI if Gemini is not available
+            logger.warning("Gemini API key not available, falling back to OpenAI")
+            
+            # Call the OpenAI API to generate a response
+            response = await openai_client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[{"role": "system", "content": prompt}],
+                max_tokens=max_tokens,
+                temperature=0.3,  # Lower temperature for more deterministic responses
+            )
+            
+            # Extract the response text
+            response_text = response.choices[0].message.content.strip()
+        else:
+            raise LLMServiceError("Neither Gemini nor OpenAI API key is available")
         
-        # Extract the response text
-        response_text = response.choices[0].message.content.strip()
+        # Extract sources from the response if possible
+        sources = extract_sources_from_text(response_text, context_chunks)
         
         # Return the response with metadata
         result = {
             "response": response_text,
             "query": query,
-            "sources": [
+            "sources": sources if sources else [
                 {
                     "chunk_id": chunk.get("chunk_id", f"chunk_{i}"),
                     "text": chunk.get("text", "")[:200] + "..." if len(chunk.get("text", "")) > 200 else chunk.get("text", ""),
                     "metadata": chunk.get("metadata", {})
                 }
                 for i, chunk in enumerate(context_chunks)
-            ]
+            ] if context_chunks else []
         }
         
         logger.info("Response generated successfully")
@@ -114,21 +202,193 @@ including the chunk number in square brackets, e.g., [1].
         logger.error(f"Error generating response: {str(e)}")
         raise LLMServiceError(f"Error generating response: {str(e)}")
 
+async def generate_response_with_pdf(
+    query: str,
+    pdf_path: str,
+    paper_title: Optional[str] = None,
+    max_tokens: int = 1000
+) -> Dict[str, Any]:
+    """
+    Generate a response to a query using the Gemini Files API with a PDF.
+    
+    Args:
+        query: The user's query
+        pdf_path: Path to the PDF file
+        paper_title: Optional title of the paper for context
+        max_tokens: Maximum number of tokens in the response
+        
+    Returns:
+        Dictionary containing the generated response and metadata
+        
+    Raises:
+        LLMServiceError: If there's an error generating a response
+    """
+    try:
+        logger.info(f"Generating response with PDF for query: {query[:50]}...")
+        
+        # Construct the prompt
+        paper_context = f" about the paper '{paper_title}'" if paper_title else ""
+        
+        prompt = f"""You are an AI research assistant. Answer the following question{paper_context} 
+using ONLY the information from the provided PDF.
+
+If the question cannot be answered using the provided PDF, say "I cannot answer this question based on the 
+available information from the paper." and suggest what further information might be needed.
+
+Question: {query}
+
+Answer the question in a clear, concise manner. If appropriate, you may format your response using Markdown.
+
+Your response MUST be structured as follows:
+1. A direct answer to the question
+2. Supporting evidence from the paper, with quotes and references to specific sections
+3. Any limitations or caveats to your answer based on the available information
+
+For each piece of supporting evidence, include the exact quote from the paper and the page number or section where it appears.
+"""
+
+        # Open the PDF file
+        pdf_file = Path(pdf_path)
+        if not pdf_file.exists():
+            raise LLMServiceError(f"PDF file not found: {pdf_path}")
+        
+        # Call the Gemini API with the PDF
+        model = genai.GenerativeModel(GEMINI_MODEL)
+        
+        # Upload the PDF file
+        with open(pdf_path, "rb") as f:
+            pdf_content = f.read()
+            
+        # Use the file content directly in the generate_content call
+        response = await asyncio.to_thread(
+            model.generate_content,
+            [
+                prompt,
+                {"mime_type": "application/pdf", "data": pdf_content}
+            ],
+            generation_config={
+                "max_output_tokens": max_tokens,
+                "temperature": 0.3,  # Lower temperature for more deterministic responses
+            }
+        )
+        
+        # Extract the response text
+        response_text = response.text.strip()
+        
+        # Extract sources from the response
+        sources = extract_sources_from_pdf_response(response_text)
+        
+        # Return the response with metadata
+        result = {
+            "response": response_text,
+            "query": query,
+            "sources": sources
+        }
+        
+        logger.info("Response with PDF generated successfully")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error generating response with PDF: {str(e)}")
+        raise LLMServiceError(f"Error generating response with PDF: {str(e)}")
+
+def extract_sources_from_pdf_response(response_text: str) -> List[Dict[str, Any]]:
+    """
+    Extract sources from a response generated with a PDF.
+    
+    Args:
+        response_text: The response text from Gemini
+        
+    Returns:
+        List of sources extracted from the response
+    """
+    sources = []
+    
+    # Look for quotes in the response
+    lines = response_text.split('\n')
+    for i, line in enumerate(lines):
+        # Look for quoted text
+        if '"' in line or '"' in line or '"' in line or "'" in line:
+            # Extract the quote
+            quote_start = line.find('"') if '"' in line else (line.find('"') if '"' in line else (line.find("'") if "'" in line else -1))
+            quote_end = line.rfind('"') if '"' in line else (line.rfind('"') if '"' in line else (line.rfind("'") if "'" in line else -1))
+            
+            if quote_start != -1 and quote_end != -1 and quote_end > quote_start:
+                quote = line[quote_start+1:quote_end]
+                
+                # Look for page or section reference
+                reference = ""
+                if "page" in line.lower() or "section" in line.lower() or "p." in line.lower() or "sec." in line.lower():
+                    # Extract the reference
+                    reference = line[quote_end+1:].strip()
+                    if reference.startswith("(") and reference.endswith(")"):
+                        reference = reference[1:-1]
+                
+                # Add the source
+                sources.append({
+                    "chunk_id": f"quote_{len(sources)+1}",
+                    "text": quote,
+                    "metadata": {
+                        "reference": reference
+                    }
+                })
+    
+    return sources
+
+def extract_sources_from_text(response_text: str, context_chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Extract sources from a response generated with text.
+    
+    Args:
+        response_text: The response text from Gemini
+        context_chunks: The context chunks used to generate the response
+        
+    Returns:
+        List of sources extracted from the response
+    """
+    sources = []
+    
+    # Look for quotes in the response
+    lines = response_text.split('\n')
+    for i, line in enumerate(lines):
+        # Look for quoted text
+        if '"' in line or '"' in line or '"' in line or "'" in line:
+            # Extract the quote
+            quote_start = line.find('"') if '"' in line else (line.find('"') if '"' in line else (line.find("'") if "'" in line else -1))
+            quote_end = line.rfind('"') if '"' in line else (line.rfind('"') if '"' in line else (line.rfind("'") if "'" in line else -1))
+            
+            if quote_start != -1 and quote_end != -1 and quote_end > quote_start:
+                quote = line[quote_start+1:quote_end]
+                
+                # Try to find the chunk that contains this quote
+                for chunk in context_chunks:
+                    if quote in chunk.get("text", ""):
+                        # Add the source
+                        sources.append({
+                            "chunk_id": chunk.get("chunk_id", f"chunk_{len(sources)+1}"),
+                            "text": quote,
+                            "metadata": chunk.get("metadata", {})
+                        })
+                        break
+    
+    return sources
 
 async def mock_generate_response(
     query: str,
     context_chunks: List[Dict[str, Any]],
     paper_title: Optional[str] = None,
-    max_tokens: int = 1000
+    max_tokens: int = 1000,
+    paper_id: Optional[UUID] = None
 ) -> Dict[str, Any]:
     """
-    Mock version of generate_response for testing without calling the OpenAI API.
+    Mock version of generate_response for testing without calling the API.
     
     Args:
         query: The user's query
         context_chunks: List of text chunks with metadata to use as context
         paper_title: Optional title of the paper for context
         max_tokens: Maximum number of tokens in the response
+        paper_id: Optional UUID of the paper to retrieve full text
         
     Returns:
         Dictionary containing the generated response and metadata
@@ -189,6 +449,8 @@ async def generate_text(
     Raises:
         LLMServiceError: If an error occurs while generating the text
     """
+    global openai_client
+    
     try:
         # Use mock for testing environments
         if APP_ENV == "testing":
@@ -196,23 +458,44 @@ async def generate_text(
             
         logger.info(f"Generating text for prompt: {prompt[:50]}...")
         
-        # Use the global client instance instead of creating a new one
-        global client
-        if client is None:
-            # Reinitialize if needed
-            client = AsyncOpenAI(api_key=api_key)
-            logger.info(f"Reinitialized OpenAI client with API key prefix: {api_key[:8]}...")
+        # Use Gemini if available, otherwise fall back to OpenAI
+        if gemini_api_key:
+            # Call the Gemini API to generate a response
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            response = await asyncio.to_thread(
+                model.generate_content,
+                prompt,
+                generation_config={
+                    "max_output_tokens": max_tokens,
+                    "temperature": temperature,
+                }
+            )
+            
+            # Extract the response text
+            generated_text = response.text
+        elif openai_api_key and openai_client:
+            # Fall back to OpenAI if Gemini is not available
+            logger.warning("Gemini API key not available, falling back to OpenAI")
+            
+            # Use the global client instance instead of creating a new one
+            if openai_client is None:
+                # Reinitialize if needed
+                openai_client = AsyncOpenAI(api_key=openai_api_key)
+                logger.info(f"Reinitialized OpenAI client with API key prefix: {openai_api_key[:8]}...")
+            
+            response = await openai_client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=max_tokens,
+                temperature=temperature
+            )
+            
+            generated_text = response.choices[0].message.content
+        else:
+            raise LLMServiceError("Neither Gemini nor OpenAI API key is available")
         
-        response = await client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=max_tokens,
-            temperature=temperature
-        )
-        
-        generated_text = response.choices[0].message.content
         logger.info(f"Successfully generated text ({len(generated_text)} characters)")
         return generated_text
         

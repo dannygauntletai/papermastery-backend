@@ -33,8 +33,8 @@ async def chat_with_paper(
     
     The system will:
     1. Search for relevant chunks in the paper
-    2. Generate a response based on those chunks
-    3. Return the response along with the source chunks
+    2. Generate a response based on those chunks or the full PDF
+    3. Return the response along with the source quotes
     
     Args:
         paper_id: The UUID of the paper
@@ -138,13 +138,14 @@ async def chat_with_paper(
                 paper_id=paper_id
             )
             
-        # Generate response based on chunks
+        # Generate response based on chunks and/or PDF
         response_func = mock_generate_response if APP_ENV == "testing" else generate_response
         
         response_data = await response_func(
             query=chat_request.query,
             context_chunks=relevant_chunks,
-            paper_title=paper.get("title", "")
+            paper_title=paper.get("title", ""),
+            paper_id=paper_id  # Pass paper_id to retrieve PDF
         )
         
         # Save the bot message to the database
@@ -166,14 +167,7 @@ async def chat_with_paper(
         return ChatResponse(
             response=response_data["response"],
             query=chat_request.query,
-            sources=[
-                {
-                    "chunk_id": chunk.get("chunk_id", ""),
-                    "text": chunk.get("text", ""),
-                    "metadata": chunk.get("metadata", {})
-                }
-                for chunk in relevant_chunks
-            ],
+            sources=response_data["sources"],  # Use the sources from the response
             paper_id=paper_id
         )
         

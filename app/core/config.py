@@ -13,6 +13,12 @@ if openai_key:
     os.environ["OPENAI_API_KEY"] = openai_key
     print(f"Config: Using OpenAI API key from .env: {openai_key[:8]}...")
 
+# Make sure Gemini API key is properly set
+gemini_key = os.getenv("GEMINI_API_KEY")
+if gemini_key:
+    os.environ["GEMINI_API_KEY"] = gemini_key
+    print(f"Config: Using Gemini API key from .env: {gemini_key[:8]}...")
+
 class Settings(BaseSettings):
     """Application settings with validation and defaults."""
     
@@ -35,6 +41,10 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     OPENAI_MODEL: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o"))
     OPENAI_EMBEDDING_MODEL: str = Field(default_factory=lambda: os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large"))
+    
+    # Gemini API configuration
+    GEMINI_API_KEY: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    GEMINI_MODEL: str = Field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-1.5-pro"))
     
     # YouTube API configuration
     YOUTUBE_API_KEY: str = Field(default_factory=lambda: os.getenv("YOUTUBE_API_KEY", ""))
@@ -59,8 +69,8 @@ class Settings(BaseSettings):
             errors.append("SUPABASE_KEY environment variable is not set")
         if not self.PINECONE_API_KEY:
             errors.append("PINECONE_API_KEY environment variable is not set")
-        if not self.OPENAI_API_KEY and self.APP_ENV != "testing":
-            errors.append("OPENAI_API_KEY environment variable is not set and required for non-testing environments")
+        if not self.OPENAI_API_KEY and not self.GEMINI_API_KEY and self.APP_ENV != "testing":
+            errors.append("Either OPENAI_API_KEY or GEMINI_API_KEY environment variable must be set for non-testing environments")
             
         if errors:
             raise ValueError("\n".join(errors))
@@ -75,6 +85,8 @@ ARXIV_API_BASE_URL: str = os.getenv("ARXIV_API_BASE_URL", "http://export.arxiv.o
 OPENALEX_API_BASE_URL: str = os.getenv("OPENALEX_API_BASE_URL", "https://api.openalex.org/works")
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o")
+GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 APP_ENV: str = os.getenv("APP_ENV", "development")
 
@@ -99,5 +111,5 @@ def validate_config() -> None:
         raise ValueError("SUPABASE_KEY environment variable is not set")
     if not PINECONE_API_KEY:
         raise ValueError("PINECONE_API_KEY environment variable is not set")
-    if not OPENAI_API_KEY and APP_ENV != "testing":
-        raise ValueError("OPENAI_API_KEY environment variable is not set and required for non-testing environments") 
+    if not OPENAI_API_KEY and not GEMINI_API_KEY and APP_ENV != "testing":
+        raise ValueError("Either OPENAI_API_KEY or GEMINI_API_KEY environment variable must be set for non-testing environments") 
