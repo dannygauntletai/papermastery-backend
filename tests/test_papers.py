@@ -88,7 +88,7 @@ def mock_supabase_client():
                 "publication_date": datetime.now().isoformat(),
                 "summaries": None,
                 "related_papers": [],
-                "tags": []
+                "tags": {"status": "pending", "category": "cs.AI"}
             }
             
             mock_insert.return_value = mock_paper

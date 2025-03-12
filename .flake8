@@ -1,0 +1,12 @@
+[flake8]
+max-line-length = 79
+exclude = .git,__pycache__,venv,build,dist
+extend-ignore = E203
+per-file-ignores =
+    # Allow imports to be grouped by section rather than alphabetically
+    __init__.py: F401,F403
+    # Allow unused imports in __init__ files
+    __init__.py: F401
+max-complexity = 10
+statistics = True
+count = True 
