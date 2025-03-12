@@ -165,27 +165,51 @@ def break_text_into_chunks(text: str, max_chunk_size: int = 1000) -> List[str]:
     return chunks
 
 
-async def get_related_papers(arxiv_id: str) -> List[Dict[str, Any]]:
+async def get_related_papers(arxiv_id: str, title: Optional[str] = None, abstract: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Get related papers using the OpenAlex API.
     
-    This function queries the OpenAlex API to find papers related to the given arXiv ID.
-    It searches for papers with similar concepts or that cite the same references.
+    This function searches for papers related to the given arXiv paper by:
+    1. First finding the paper in OpenAlex using the abstract's first sentence or title
+    2. Using the most relevant search result to get the OpenAlex work ID
+    3. Using the work ID to find papers that cite this paper
     
     Args:
-        arxiv_id: The arXiv ID of the paper
+        arxiv_id: The arXiv ID of the paper (used only for logging and as a reference)
+        title: Optional title of the paper (will be fetched if not provided)
+        abstract: Optional abstract of the paper (will be fetched if not provided)
         
     Returns:
-        List of related papers with metadata (title, authors, arxiv_id, abstract)
+        List of related papers with metadata (title, authors, abstract, etc.)
     """
     try:
         logger.info(f"Fetching related papers for arXiv ID: {arxiv_id} using OpenAlex API")
         
-        # Construct the OpenAlex API URL using the configuration variable
-        # Search for papers mentioning this arXiv ID in their references
-        # Query format based on OpenAlex API documentation
-        query = f"arxiv:{arxiv_id}"
-        search_url = f"{OPENALEX_API_BASE_URL}?filter=cited_by:{query}&per_page=5"
+        # If title and abstract are not provided, fetch them
+        if title is None or abstract is None:
+            try:
+                paper_metadata = await fetch_paper_metadata(arxiv_id)
+                title = paper_metadata.title
+                abstract = paper_metadata.abstract
+                logger.info(f"Fetched metadata for paper: {title}")
+            except Exception as e:
+                logger.error(f"Error fetching paper metadata: {str(e)}")
+                return []
+        
+        # Extract the first sentence from the abstract for searching
+        first_sentence = abstract.split('.')[0].strip() if abstract else ""
+        if not first_sentence and title:
+            # Fall back to title if abstract is empty or has no sentences
+            first_sentence = title
+        
+        if not first_sentence:
+            logger.error("No search text available from abstract or title")
+            return []
+            
+        logger.info(f"Searching for paper using first sentence: {first_sentence[:50]}...")
+        
+        # Step 1: Search for the paper in OpenAlex using the abstract's first sentence
+        search_url = f"{OPENALEX_API_BASE_URL}?search={quote(first_sentence)}&filter=has_abstract:true&per_page=5"
         
         logger.debug(f"Querying OpenAlex API at: {search_url}")
         
@@ -206,59 +230,159 @@ async def get_related_papers(arxiv_id: str) -> List[Dict[str, Any]]:
             
             # Parse response data
             data = response.json()
+            search_results = data.get("results", [])
+            
+            if not search_results:
+                logger.warning(f"No papers found matching the abstract: {first_sentence[:50]}...")
+                
+                # Try searching by title as fallback
+                if title and title != first_sentence:
+                    logger.info(f"Trying to search by title instead: {title[:50]}...")
+                    title_search_url = f"{OPENALEX_API_BASE_URL}?search={quote(title)}&per_page=5"
+                    
+                    response = await client.get(
+                        title_search_url,
+                        headers={"Accept": "application/json"},
+                        timeout=15.0
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        search_results = data.get("results", [])
+                
+                if not search_results:
+                    logger.warning("No papers found in OpenAlex matching this paper")
+                    return []
+            
+            # Use the first result as the best match
+            # OpenAlex search should return the most relevant results first
+            if search_results:
+                work_id = search_results[0].get("id")
+                logger.info(f"Using best match with work_id: {work_id}")
+            else:
+                logger.warning("Could not determine work_id from search results")
+                return []
+            
+            # Extract just the ID part if it's a full URL
+            # OpenAlex IDs are typically in the format "https://openalex.org/W1234567890"
+            # We need just the "W1234567890" part for the API query
+            work_id_short = work_id
+            if isinstance(work_id, str) and "/" in work_id:
+                work_id_short = work_id.split("/")[-1]
+                logger.debug(f"Extracted short work_id: {work_id_short} from {work_id}")
+            
+            # Step 2: Use the work ID to find papers that cite this paper
+            cited_by_url = f"{OPENALEX_API_BASE_URL}?filter=cites:{work_id_short}&per_page=5"
+            
+            logger.debug(f"Querying OpenAlex API for citations at: {cited_by_url}")
+            
+            response = await client.get(
+                cited_by_url,
+                headers={"Accept": "application/json"},
+                timeout=15.0
+            )
+            
+            if response.status_code != 200:
+                logger.warning(
+                    f"OpenAlex API returned non-200 status code for citations: {response.status_code}"
+                )
+                return []
+            
+            # Parse response data
+            data = response.json()
             results = data.get("results", [])
             
-            # If no results found using cited_by, try similar papers by concept
+            # If no citing papers found, try papers with similar concepts
             if not results:
                 logger.info(f"No citing papers found, searching for conceptually similar papers")
-                concept_url = f"{OPENALEX_API_BASE_URL}?filter=concepts.id:arxiv:{arxiv_id}&per_page=5"
                 
-                response = await client.get(
-                    concept_url,
+                # Extract concepts from the work
+                work_url = f"{OPENALEX_API_BASE_URL}/{work_id_short}"
+                work_response = await client.get(
+                    work_url,
                     headers={"Accept": "application/json"},
                     timeout=15.0
                 )
                 
-                if response.status_code == 200:
-                    data = response.json()
-                    results = data.get("results", [])
+                if work_response.status_code == 200:
+                    work_data = work_response.json()
+                    concepts = work_data.get("concepts", [])
+                    
+                    if concepts:
+                        # Use the top concept ID to find similar papers
+                        top_concept = concepts[0].get("id") if concepts else None
+                        
+                        if top_concept:
+                            concept_url = f"{OPENALEX_API_BASE_URL}?filter=concepts.id:{top_concept}&per_page=5"
+                            
+                            concept_response = await client.get(
+                                concept_url,
+                                headers={"Accept": "application/json"},
+                                timeout=15.0
+                            )
+                            
+                            if concept_response.status_code == 200:
+                                concept_data = concept_response.json()
+                                results = concept_data.get("results", [])
             
             # Process results into a consistent format
             related_papers = []
             for paper in results:
                 # Extract basic metadata from OpenAlex response
-                title = paper.get("title", "Untitled Paper")
+                paper_title = paper.get("title", "Untitled Paper")
+                paper_id = paper.get("id", "")
                 
-                # Extract authors
+                # Extract DOI if available
+                paper_doi = paper.get("doi", "")
+                
+                # Extract PDF URL if available
+                pdf_url = None
+                primary_location = paper.get("primary_location", {})
+                if primary_location:
+                    pdf_url = primary_location.get("pdf_url")
+                
+                # If no PDF URL in primary location, check all locations
+                if not pdf_url:
+                    for location in paper.get("locations", []):
+                        if location.get("pdf_url"):
+                            pdf_url = location.get("pdf_url")
+                            break
+                
+                # Extract authors (limit to top 5 for brevity)
                 authors_data = []
-                for author in paper.get("authorships", []):
+                for author in paper.get("authorships", [])[:5]:  # Limit to top 5 authors
                     author_obj = author.get("author", {})
+                    author_name = author_obj.get("display_name", "Unknown Author")
+                    
+                    # Get author position if available
+                    author_position = author.get("author_position", "")
+                    
+                    # Get primary affiliation if available
+                    affiliations = []
+                    for institution in author.get("institutions", [])[:1]:  # Just get primary affiliation
+                        if institution.get("display_name"):
+                            affiliations.append(institution.get("display_name"))
+                    
                     authors_data.append({
-                        "name": author_obj.get("display_name", "Unknown Author"),
-                        "affiliations": [
-                            affil.get("display_name", "Unknown Affiliation")
-                            for affil in author.get("institutions", [])
-                        ]
+                        "name": author_name,
+                        "position": author_position,
+                        "affiliations": affiliations
                     })
                 
-                # Extract abstract
-                abstract = paper.get("abstract", "No abstract available")
+                # Extract publication year and date
+                publication_year = paper.get("publication_year", None)
+                publication_date = paper.get("publication_date", None)
                 
-                # Get arXiv ID if available
-                arxiv_id = None
-                for identifier in paper.get("ids", {}).values():
-                    if isinstance(identifier, str) and "arxiv" in identifier.lower():
-                        arxiv_id = identifier.split("/")[-1]
-                        break
-                
-                # Only include papers with arXiv IDs
-                if arxiv_id:
-                    related_papers.append({
-                        "title": title,
-                        "authors": authors_data,
-                        "arxiv_id": arxiv_id,
-                        "abstract": abstract
-                    })
+                # Add paper to results
+                related_papers.append({
+                    "title": paper_title,
+                    "authors": authors_data,
+                    "openalex_id": paper_id,
+                    "doi": paper_doi,
+                    "pdf_url": pdf_url,
+                    "publication_year": publication_year,
+                    "publication_date": publication_date
+                })
             
             logger.info(f"Found {len(related_papers)} related papers for arXiv ID: {arxiv_id}")
             return related_papers[:5]  # Limit to 5 related papers
