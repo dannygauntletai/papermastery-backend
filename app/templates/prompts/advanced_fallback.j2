@@ -1,0 +1,39 @@
+{% extends "prompts/base_summary.j2" %}
+
+{% block fallback_content %}
+# Technical Research Summary
+
+## Abstract
+
+{{ abstract }}
+
+## Research Context and Objectives
+
+The research aims to contribute to the existing knowledge base within this field through systematic 
+investigation of the topic. 
+
+## Methodological Approach
+
+The research methodology likely employed rigorous analytical techniques appropriate for this 
+research domain.
+
+## Key Findings
+
+The findings of this research contribute to our understanding of the topic, potentially 
+providing new insights or theoretical frameworks.
+
+## Theoretical Implications
+
+This research likely extends existing theoretical frameworks and contributes new insights 
+to ongoing scholarly discourse in this field.
+
+## Limitations and Future Research
+
+As with all research, this study has limitations that provide opportunities for future 
+investigations.
+
+## Paper Metrics
+
+- Content chunks: {{ chunks|length }}
+- Approximate word count: {{ full_text.split()|length }}
+{% endblock %} 

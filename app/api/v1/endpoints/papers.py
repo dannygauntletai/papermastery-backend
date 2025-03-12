@@ -278,23 +278,39 @@ async def process_paper_in_background(arxiv_id: str, paper_id: UUID):
         arxiv_id: The arXiv ID of the paper
         paper_id: The UUID of the paper in our database
     """
+    embedding_id = None
+    related_papers = None
+    error_message = None
+    
     try:
         logger.info(f"Processing paper in background: {arxiv_id}")
         
         # Update status to processing
         await update_paper(paper_id, {"tags": {"status": "processing"}})
         
-        # Download and process PDF
-        full_text, text_chunks = await download_and_process_paper(arxiv_id)
+        # Download and process PDF - pass the paper_id for LangChain processing
+        full_text, text_chunks = await download_and_process_paper(arxiv_id, paper_id)
         
-        # Chunk the text
-        chunks = await chunk_text(full_text, paper_id)
+        # Chunk the text - now processes with LangChain if available
+        chunks = await chunk_text(full_text, paper_id, text_chunks)
         
-        # Store chunks in Pinecone
-        embedding_id = await store_chunks(paper_id, chunks)
+        # Try to store chunks in Pinecone, but continue if it fails
+        try:
+            embedding_id = await store_chunks(paper_id, chunks)
+            logger.info(f"Successfully stored chunks in Pinecone for paper ID: {paper_id}")
+        except Exception as pinecone_error:
+            logger.error(f"Error storing chunks in Pinecone for paper ID {paper_id}: {str(pinecone_error)}")
+            error_message = f"Pinecone error: {str(pinecone_error)[:200]}"
+            # Continue processing despite Pinecone error
         
-        # Get related papers
-        related_papers = await get_related_papers(arxiv_id)
+        # Try to get related papers, but continue if it fails
+        try:
+            related_papers = await get_related_papers(arxiv_id)
+            logger.info(f"Successfully fetched related papers for paper ID: {paper_id}")
+        except Exception as related_papers_error:
+            logger.error(f"Error fetching related papers for paper ID {paper_id}: {str(related_papers_error)}")
+            error_message = error_message or f"Related papers error: {str(related_papers_error)[:200]}"
+            # Continue processing despite related papers error
         
         # Generate summaries
         paper = await get_paper_by_id(paper_id)
@@ -306,21 +322,26 @@ async def process_paper_in_background(arxiv_id: str, paper_id: UUID):
         )
         
         # Update the paper in the database
-        await update_paper(
-            paper_id,
-            {
-                "full_text": full_text[:1000],  # Store first 1000 chars as preview
-                "summaries": {
-                    "beginner": summaries.beginner,
-                    "intermediate": summaries.intermediate,
-                    "advanced": summaries.advanced
-                },
-                "embedding_id": embedding_id,
-                "related_papers": related_papers,
-                "tags": {"status": "completed"},
-                "chunk_count": len(chunks)
-            }
-        )
+        update_data = {
+            "full_text": full_text[:1000],  # Store first 1000 chars as preview
+            "summaries": {
+                "beginner": summaries.beginner,
+                "intermediate": summaries.intermediate,
+                "advanced": summaries.advanced
+            },
+            "chunk_count": len(chunks),
+            "tags": {"status": "completed"}
+        }
+        
+        # Add embedding_id and related_papers if they were successfully retrieved
+        if embedding_id:
+            update_data["embedding_id"] = embedding_id
+        if related_papers:
+            update_data["related_papers"] = related_papers
+        if error_message:
+            update_data["partial_error"] = error_message
+            
+        await update_paper(paper_id, update_data)
         
         logger.info(f"Background processing completed for paper: {arxiv_id}")
         

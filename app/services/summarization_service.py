@@ -1,11 +1,19 @@
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 import asyncio
 from uuid import UUID
+import os.path
+from jinja2 import Environment, FileSystemLoader
 
 from app.core.logger import get_logger
 from app.api.v1.models import PaperSummary
+from app.core.config import APP_ENV
+from app.services.llm_service import generate_text, mock_generate_text
 
 logger = get_logger(__name__)
+
+# Initialize Jinja2 environment
+templates_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'app', 'templates')
+env = Environment(loader=FileSystemLoader(templates_dir))
 
 
 async def generate_summaries(
@@ -16,9 +24,6 @@ async def generate_summaries(
 ) -> PaperSummary:
     """
     Generate tiered summaries (beginner, intermediate, advanced) for a paper.
-    
-    In a real implementation, this would use sophisticated NLP or LLMs like
-    GPT-3.5/GPT-4 to generate summaries at different levels of complexity.
     
     Args:
         paper_id: The UUID of the paper
@@ -32,22 +37,16 @@ async def generate_summaries(
     try:
         logger.info(f"Generating summaries for paper ID: {paper_id}")
         
-        # In a real implementation, we would:
-        # 1. Use the abstract as a starting point
-        # 2. Identify key sections (intro, methods, results, conclusion)
-        # 3. Use NLP/LLM to generate tiered summaries
-        
-        # This is a placeholder implementation
-        await asyncio.sleep(2)  # Simulate processing time
-        
         # Extract intro and conclusion chunks if available
         intro_chunks = [c for c in chunks if c["metadata"].get("is_introduction", False)]
         conclusion_chunks = [c for c in chunks if c["metadata"].get("is_conclusion", False)]
         
-        # Simple summary generation using abstract and key chunks
-        beginner_summary = generate_beginner_summary(abstract, intro_chunks, conclusion_chunks)
-        intermediate_summary = generate_intermediate_summary(abstract, intro_chunks, conclusion_chunks)
-        advanced_summary = generate_advanced_summary(abstract, full_text, chunks)
+        # Generate all summaries concurrently for efficiency
+        beginner_summary, intermediate_summary, advanced_summary = await asyncio.gather(
+            generate_beginner_summary(abstract, intro_chunks, conclusion_chunks),
+            generate_intermediate_summary(abstract, intro_chunks, conclusion_chunks),
+            generate_advanced_summary(abstract, full_text, chunks)
+        )
         
         summaries = PaperSummary(
             beginner=beginner_summary,
@@ -68,7 +67,7 @@ async def generate_summaries(
         )
 
 
-def generate_beginner_summary(
+async def generate_beginner_summary(
     abstract: str,
     intro_chunks: List[Dict[str, Any]],
     conclusion_chunks: List[Dict[str, Any]]
@@ -86,26 +85,38 @@ def generate_beginner_summary(
     Returns:
         Beginner-level summary text
     """
-    # In a real implementation, we would:
-    # 1. Simplify vocabulary and explain terms
-    # 2. Focus on the problem and results
-    # 3. Use an LLM with prompt engineering to simplify
+    # Extract key information from the paper's abstract and chunks
+    intro_text = " ".join([c["text"] for c in intro_chunks[:2]]) if intro_chunks else ""
+    conclusion_text = " ".join([c["text"] for c in conclusion_chunks[:2]]) if conclusion_chunks else ""
     
-    # This is a placeholder implementation
-    intro_text = " ".join([c["text"][:200] for c in intro_chunks]) if intro_chunks else ""
-    conclusion_text = " ".join([c["text"][:200] for c in conclusion_chunks]) if conclusion_chunks else ""
-    
-    # Create a simplified summary
-    summary = (
-        f"This paper is about {abstract.split('.')[0].lower() if abstract else 'a research topic'}. "
-        f"{intro_text[:100] + '...' if intro_text else 'The research examines important questions in this field.'} "
-        f"{conclusion_text[:100] + '...' if conclusion_text else 'The findings have potential implications for future research.'}"
+    # Load and render the template
+    template = env.get_template('prompts/beginner_summary.j2')
+    prompt = template.render(
+        abstract=abstract,
+        intro_text=intro_text,
+        conclusion_text=conclusion_text,
+        block='content'  # Specify which block to use
     )
     
-    return summary
+    try:
+        # Use the appropriate generate function based on environment
+        if APP_ENV == "testing":
+            summary = await mock_generate_text(prompt, max_tokens=500, temperature=0.7)
+        else:
+            summary = await generate_text(prompt, max_tokens=500, temperature=0.7)
+        
+        return summary
+    except Exception as e:
+        logger.error(f"Error generating beginner summary: {str(e)}")
+        # Use fallback template
+        fallback_template = env.get_template('prompts/beginner_fallback.j2')
+        return fallback_template.render(
+            abstract=abstract,
+            block='fallback_content'  # Specify which block to use
+        )
 
 
-def generate_intermediate_summary(
+async def generate_intermediate_summary(
     abstract: str,
     intro_chunks: List[Dict[str, Any]],
     conclusion_chunks: List[Dict[str, Any]]
@@ -123,28 +134,38 @@ def generate_intermediate_summary(
     Returns:
         Intermediate-level summary text
     """
-    # In a real implementation, we would:
-    # 1. Identify key technical terms and provide explanations
-    # 2. Outline the methodology more clearly
-    # 3. Use an LLM with prompt engineering for this level
+    # Extract and process content from the paper
+    intro_text = " ".join([c["text"] for c in intro_chunks]) if intro_chunks else ""
+    conclusion_text = " ".join([c["text"] for c in conclusion_chunks]) if conclusion_chunks else ""
     
-    # This is a placeholder implementation
-    # Use the full abstract and more detailed sections
-    intro_text = " ".join([c["text"][:300] for c in intro_chunks]) if intro_chunks else ""
-    conclusion_text = " ".join([c["text"][:300] for c in conclusion_chunks]) if conclusion_chunks else ""
-    
-    # Create a more detailed summary
-    summary = (
-        f"{abstract} "
-        f"\n\nIntroduction Highlights: {intro_text[:200] + '...' if intro_text else 'Not available.'} "
-        f"\n\nConclusion Highlights: {conclusion_text[:200] + '...' if conclusion_text else 'Not available.'} "
-        f"\n\nNote: This intermediate summary includes the key points from the paper with technical terms explained."
+    # Load and render the template
+    template = env.get_template('prompts/intermediate_summary.j2')
+    prompt = template.render(
+        abstract=abstract,
+        intro_text=intro_text,
+        conclusion_text=conclusion_text,
+        block='content'  # Specify which block to use
     )
     
-    return summary
+    try:
+        # Use the appropriate generate function based on environment
+        if APP_ENV == "testing":
+            summary = await mock_generate_text(prompt, max_tokens=800, temperature=0.7)
+        else:
+            summary = await generate_text(prompt, max_tokens=800, temperature=0.7)
+        
+        return summary
+    except Exception as e:
+        logger.error(f"Error generating intermediate summary: {str(e)}")
+        # Use fallback template
+        fallback_template = env.get_template('prompts/intermediate_fallback.j2')
+        return fallback_template.render(
+            abstract=abstract,
+            block='fallback_content'  # Specify which block to use
+        )
 
 
-def generate_advanced_summary(
+async def generate_advanced_summary(
     abstract: str,
     full_text: str,
     chunks: List[Dict[str, Any]]
@@ -162,23 +183,47 @@ def generate_advanced_summary(
     Returns:
         Advanced-level summary text
     """
-    # In a real implementation, we would:
-    # 1. Preserve technical depth and terminology
-    # 2. Extract detailed methodology and results
-    # 3. Use an LLM with prompt engineering to create a comprehensive summary
-    
-    # This is a placeholder implementation
-    # Extract methodology chunks, if available
+    # Extract different section types from the chunks
     method_chunks = [c for c in chunks if c["metadata"].get("is_methodology", False)]
-    method_text = " ".join([c["text"][:400] for c in method_chunks]) if method_chunks else ""
+    result_chunks = [c for c in chunks if c["metadata"].get("is_results", False)]
+    discussion_chunks = [c for c in chunks if c["metadata"].get("is_discussion", False)]
+    intro_chunks = [c for c in chunks if c["metadata"].get("is_introduction", False)]
+    conclusion_chunks = [c for c in chunks if c["metadata"].get("is_conclusion", False)]
     
-    # Create a comprehensive summary
-    summary = (
-        f"{abstract} "
-        f"\n\nMethodology Highlights: {method_text[:300] + '...' if method_text else 'Methodology details not available.'} "
-        f"\n\nAdditional Details: This paper contains approximately {len(chunks)} sections of content, "
-        f"with a total of approximately {len(full_text)} characters. "
-        f"\n\nNote: This advanced summary maintains the full technical depth of the original paper."
+    # Combine text from each section
+    method_text = " ".join([c["text"] for c in method_chunks]) if method_chunks else ""
+    result_text = " ".join([c["text"] for c in result_chunks]) if result_chunks else ""
+    discussion_text = " ".join([c["text"] for c in discussion_chunks]) if discussion_chunks else ""
+    intro_text = " ".join([c["text"] for c in intro_chunks]) if intro_chunks else ""
+    conclusion_text = " ".join([c["text"] for c in conclusion_chunks]) if conclusion_chunks else ""
+    
+    # Load and render the template
+    template = env.get_template('prompts/advanced_summary.j2')
+    prompt = template.render(
+        abstract=abstract,
+        intro_text=intro_text,
+        method_text=method_text,
+        result_text=result_text,
+        discussion_text=discussion_text,
+        conclusion_text=conclusion_text,
+        block='content'  # Specify which block to use
     )
     
-    return summary 
+    try:
+        # Use the appropriate generate function based on environment
+        if APP_ENV == "testing":
+            summary = await mock_generate_text(prompt, max_tokens=1500, temperature=0.7)
+        else:
+            summary = await generate_text(prompt, max_tokens=1500, temperature=0.7)
+        
+        return summary
+    except Exception as e:
+        logger.error(f"Error generating advanced summary: {str(e)}")
+        # Use fallback template
+        fallback_template = env.get_template('prompts/advanced_fallback.j2')
+        return fallback_template.render(
+            abstract=abstract,
+            full_text=full_text,
+            chunks=chunks,
+            block='fallback_content'  # Specify which block to use
+        ) 

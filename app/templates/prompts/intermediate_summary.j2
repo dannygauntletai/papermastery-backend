@@ -1,0 +1,24 @@
+{% extends "prompts/base_summary.j2" %}
+
+{% block content %}
+Create an intermediate-level summary of this research paper for someone with a bachelor's degree
+in a related field. Maintain appropriate technical detail but explain specialized terminology.
+
+Paper abstract: {{ abstract }}
+
+{% if intro_text %}
+Introduction excerpt: {{ intro_text|truncate(800) }}
+{% endif %}
+
+{% if conclusion_text %}
+Conclusion excerpt: {{ conclusion_text|truncate(800) }}
+{% endif %}
+
+Your summary should:
+1. Explain the research purpose, methodology, and findings
+2. Define or explain specialized terminology when first introduced
+3. Highlight the significance of the findings in the broader field
+4. Discuss potential implications of the research
+5. Maintain an intermediate level of technical detail appropriate for an educated reader
+6. Format the summary with clear sections: Overview, Methodology, Results, and Implications
+{% endblock %} 

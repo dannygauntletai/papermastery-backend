@@ -1,0 +1,37 @@
+{% extends "prompts/base_summary.j2" %}
+
+{% block content %}
+Create an advanced, technically detailed summary of this research paper for domain experts
+or PhD-level researchers in the field. Maintain full technical depth and specialized vocabulary.
+
+Paper abstract: {{ abstract }}
+
+{% if intro_text %}
+Introduction: {{ intro_text|truncate(1000) }}
+{% endif %}
+
+{% if method_text %}
+Methodology: {{ method_text|truncate(1000) }}
+{% endif %}
+
+{% if result_text %}
+Results: {{ result_text|truncate(1000) }}
+{% endif %}
+
+{% if discussion_text %}
+Discussion: {{ discussion_text|truncate(1000) }}
+{% endif %}
+
+{% if conclusion_text %}
+Conclusion: {{ conclusion_text|truncate(1000) }}
+{% endif %}
+
+Your summary should:
+1. Preserve all technical terminology without simplification
+2. Provide a detailed analysis of the methodology and its appropriateness
+3. Critically evaluate the findings and their significance
+4. Discuss theoretical implications and connections to existing literature
+5. Identify limitations and potential future research directions
+6. Use technical language appropriate for experts in the field
+7. Structure the content logically with formal academic headings
+{% endblock %} 

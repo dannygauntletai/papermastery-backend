@@ -1,3 +1,15 @@
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env file at the application start
+load_dotenv()
+
+# Explicitly set OpenAI API key in the environment
+openai_key = os.getenv("OPENAI_API_KEY")
+if openai_key:
+    os.environ["OPENAI_API_KEY"] = openai_key
+    print(f"Set OpenAI API key in environment (prefix: {openai_key[:8]}...)")
+
 from fastapi import FastAPI, Depends, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi

@@ -7,6 +7,12 @@ from pydantic import Field
 # Load environment variables from .env file
 load_dotenv()
 
+# Make sure important environment variables are properly set
+openai_key = os.getenv("OPENAI_API_KEY")
+if openai_key:
+    os.environ["OPENAI_API_KEY"] = openai_key
+    print(f"Config: Using OpenAI API key from .env: {openai_key[:8]}...")
+
 class Settings(BaseSettings):
     """Application settings with validation and defaults."""
     
@@ -28,6 +34,7 @@ class Settings(BaseSettings):
     # OpenAI API configuration
     OPENAI_API_KEY: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     OPENAI_MODEL: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o"))
+    OPENAI_EMBEDDING_MODEL: str = Field(default_factory=lambda: os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large"))
     
     # YouTube API configuration
     YOUTUBE_API_KEY: str = Field(default_factory=lambda: os.getenv("YOUTUBE_API_KEY", ""))

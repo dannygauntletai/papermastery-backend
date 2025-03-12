@@ -237,4 +237,13 @@ flake8
 
 - [arXiv](https://arxiv.org/) for providing access to research papers
 - [Supabase](https://supabase.io/) for database and authentication
-- [Pinecone](https://www.pinecone.io/) for vector search capabilities 
+- [Pinecone](https://www.pinecone.io/) for vector search capabilities
+
+## LangChain Integration
+
+The application uses LangChain for PDF processing and vector storage:
+
+- **PDF Processing**: Uses LangChain's PyPDFLoader to load and process PDFs
+- **Text Chunking**: Uses LangChain's RecursiveCharacterTextSplitter for intelligent text chunking
+- **Embeddings**: Uses LangChain's OpenAIEmbeddings for generating embeddings
+- **Vector Storage**: Uses LangChain's PineconeVectorStore for storing and retrieving embeddings 

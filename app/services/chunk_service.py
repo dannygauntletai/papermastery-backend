@@ -13,6 +13,7 @@ logger = get_logger(__name__)
 async def chunk_text(
     text: str,
     paper_id: UUID,
+    pre_processed_chunks: List[Dict[str, Any]] = None,
     max_chunk_size: int = 1000,
     overlap: int = 100
 ) -> List[Dict[str, Any]]:
@@ -22,6 +23,7 @@ async def chunk_text(
     Args:
         text: The text to chunk
         paper_id: The ID of the paper
+        pre_processed_chunks: Optional pre-processed chunks from LangChain
         max_chunk_size: Maximum size of each chunk
         overlap: Overlap between chunks
         
@@ -31,11 +33,24 @@ async def chunk_text(
     try:
         logger.info(f"Chunking text for paper ID: {paper_id}")
         
+        # If pre-processed chunks are provided, use them
+        if pre_processed_chunks:
+            logger.info(f"Using {len(pre_processed_chunks)} pre-processed chunks for paper ID: {paper_id}")
+            # Ensure paper_id is in metadata
+            for chunk in pre_processed_chunks:
+                if "metadata" not in chunk:
+                    chunk["metadata"] = {}
+                chunk["metadata"]["paper_id"] = str(paper_id)
+            
+            logger.info(f"Successfully created {len(pre_processed_chunks)} chunks for paper ID: {paper_id}")
+            return pre_processed_chunks
+        
+        # Otherwise, proceed with LangChain chunking
         # Extract sections from the text
         sections = extract_sections(text)
         chunks = []
         
-        # Process each section
+        # Process each section using LangChain's RecursiveCharacterTextSplitter
         for section_num, (section_title, section_content) in enumerate(sections):
             # Use Langchain RecursiveCharacterTextSplitter for each section
             text_splitter = RecursiveCharacterTextSplitter(
@@ -45,12 +60,26 @@ async def chunk_text(
                 keep_separator=True
             )
             
+            # Create documents with metadata
+            section_metadata = {
+                "section_title": section_title,
+                "section_number": section_num,
+                "paper_id": str(paper_id),
+                "is_introduction": "introduction" in section_title.lower(),
+                "is_conclusion": any(
+                    word in section_title.lower() 
+                    for word in ["conclusion", "discussion", "summary"]
+                ),
+                "is_methodology": any(
+                    word in section_title.lower() 
+                    for word in ["method", "approach", "experiment"]
+                ),
+                "is_abstract": "abstract" in section_title.lower()
+            }
+            
             section_chunks = text_splitter.create_documents(
                 [section_content], 
-                metadatas=[{
-                    "section_title": section_title,
-                    "section_number": section_num
-                }]
+                metadatas=[section_metadata]
             )
             
             for chunk_num, chunk_doc in enumerate(section_chunks):
@@ -63,19 +92,9 @@ async def chunk_text(
                 # Format the chunk with metadata
                 chunk = {
                     "text": chunk_text,
-                    "paper_id": str(paper_id),
-                    "chunk_id": f"{section_num}_{chunk_num}",
                     "metadata": {
-                        "section_title": section_title,
-                        "is_introduction": "introduction" in section_title.lower(),
-                        "is_conclusion": any(
-                            word in section_title.lower() 
-                            for word in ["conclusion", "discussion", "summary"]
-                        ),
-                        "is_methodology": any(
-                            word in section_title.lower() 
-                            for word in ["method", "approach", "experiment"]
-                        ),
+                        **chunk_doc.metadata,
+                        "chunk_id": f"{section_num}_{chunk_num}",
                         "length": len(chunk_text)
                     }
                 }
@@ -96,7 +115,20 @@ async def chunk_text(
                 keep_separator=True
             )
             
-            raw_chunks = text_splitter.create_documents([text])
+            # Create documents with metadata
+            raw_metadata = {
+                "section_title": "No Section",
+                "paper_id": str(paper_id),
+                "is_introduction": False,
+                "is_conclusion": False,
+                "is_methodology": False,
+                "is_abstract": False
+            }
+            
+            raw_chunks = text_splitter.create_documents(
+                [text],
+                metadatas=[raw_metadata]
+            )
             
             for chunk_num, chunk_doc in enumerate(raw_chunks):
                 chunk_text = chunk_doc.page_content
@@ -108,13 +140,9 @@ async def chunk_text(
                 # Format the chunk with metadata
                 chunk = {
                     "text": chunk_text,
-                    "paper_id": str(paper_id),
-                    "chunk_id": f"raw_{chunk_num}",
                     "metadata": {
-                        "section_title": "No Section",
-                        "is_introduction": False,
-                        "is_conclusion": False,
-                        "is_methodology": False,
+                        **chunk_doc.metadata,
+                        "chunk_id": f"raw_{chunk_num}",
                         "length": len(chunk_text)
                     }
                 }

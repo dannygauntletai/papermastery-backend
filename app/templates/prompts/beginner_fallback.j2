@@ -1,0 +1,10 @@
+{% extends "prompts/base_summary.j2" %}
+
+{% block fallback_content %}
+This paper explores important research on {{ abstract.split('.')[0].lower() if abstract else 'a scientific topic' }}.
+
+The researchers investigated this topic to better understand its implications and potential applications.
+Their findings provide valuable insights that could help advance our understanding in this field.
+
+This research is important because it adds to our knowledge and might lead to practical applications.
+{% endblock %} 
