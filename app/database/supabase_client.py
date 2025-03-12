@@ -189,7 +189,10 @@ async def create_conversation(conversation_data: Dict[str, Any]) -> Dict[str, An
     Create a conversation in the Supabase database.
     
     Args:
-        conversation_data: The conversation data to insert
+        conversation_data: The conversation data to insert, should include:
+            - id: Unique identifier for the conversation
+            - user_id: ID of the user who owns the conversation
+            - paper_id: ID of the paper the conversation is about (new field)
         
     Returns:
         The created conversation data
@@ -198,12 +201,18 @@ async def create_conversation(conversation_data: Dict[str, Any]) -> Dict[str, An
         SupabaseError: If there's an error creating the conversation
     """
     try:
+        # Ensure paper_id is included in the conversation data
+        if "paper_id" not in conversation_data:
+            # For backward compatibility, if paper_id is not provided, use the id as paper_id
+            conversation_data["paper_id"] = conversation_data["id"]
+            logger.info(f"Using conversation ID as paper_id: {conversation_data['id']}")
+        
         response = supabase.table("user_conversations").insert(conversation_data).execute()
         
         if len(response.data) == 0:
             raise SupabaseError("Failed to create conversation: No data returned")
             
-        logger.info(f"Conversation created with ID: {response.data[0]['id']}")
+        logger.info(f"Conversation created with ID: {response.data[0]['id']}, paper_id: {conversation_data['paper_id']}")
         return response.data[0]
     except Exception as e:
         logger.error(f"Error creating conversation: {str(e)}")
@@ -281,4 +290,28 @@ async def get_conversation_messages(conversation_id: str) -> List[Dict[str, Any]
         return response.data
     except Exception as e:
         logger.error(f"Error retrieving messages for conversation {conversation_id}: {str(e)}")
-        raise SupabaseError(f"Error retrieving messages for conversation {conversation_id}: {str(e)}") 
+        raise SupabaseError(f"Error retrieving messages for conversation {conversation_id}: {str(e)}")
+
+
+async def get_user_paper_conversations(user_id: str, paper_id: str) -> List[Dict[str, Any]]:
+    """
+    Retrieve all conversations for a specific user and paper from the Supabase database.
+    
+    Args:
+        user_id: The ID of the user
+        paper_id: The ID of the paper
+        
+    Returns:
+        List of conversations for the user and paper, ordered by creation timestamp
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the conversations
+    """
+    try:
+        response = supabase.table("user_conversations").select("*").eq("user_id", user_id).eq("paper_id", paper_id).order("created_at", desc=True).execute()
+        
+        logger.info(f"Retrieved {len(response.data)} conversations for user {user_id} and paper {paper_id}")
+        return response.data
+    except Exception as e:
+        logger.error(f"Error retrieving conversations for user {user_id} and paper {paper_id}: {str(e)}")
+        raise SupabaseError(f"Error retrieving conversations for user {user_id} and paper {paper_id}: {str(e)}") 

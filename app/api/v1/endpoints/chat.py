@@ -71,18 +71,19 @@ async def chat_with_paper(
         )
     
     # Ensure a conversation exists for this paper
-    conversation_id = str(paper_id)
+    conversation_id = chat_request.conversation_id if chat_request.conversation_id else str(paper_id)
     conversation = await get_conversation(conversation_id)
     if not conversation:
         try:
-            # Create a conversation using the paper ID as the conversation ID
+            # Create a conversation using the provided ID or paper ID as fallback
             await create_conversation({
                 "id": conversation_id,
-                "user_id": user_id
+                "user_id": user_id,
+                "paper_id": str(paper_id)  # Ensure paper_id is set correctly
             })
-            logger.info(f"Created conversation for paper with ID: {paper_id}")
+            logger.info(f"Created conversation with ID: {conversation_id} for paper with ID: {paper_id}")
         except Exception as e:
-            logger.warning(f"Could not create conversation for paper: {str(e)}")
+            logger.warning(f"Could not create conversation: {str(e)}")
             # Continue even if conversation creation fails
     
     # Save the user message to the database
@@ -95,7 +96,7 @@ async def chat_with_paper(
             "sender": "user"
         }
         await insert_message(user_message_data)
-        logger.info(f"Saved user message for paper {paper_id}")
+        logger.info(f"Saved user message for conversation {conversation_id}")
     except Exception as e:
         logger.error(f"Error saving user message: {str(e)}")
         # Continue even if message saving fails
@@ -125,7 +126,7 @@ async def chat_with_paper(
                     "sender": "bot"
                 }
                 await insert_message(bot_message_data)
-                logger.info(f"Saved bot message for paper {paper_id}")
+                logger.info(f"Saved bot message for conversation {conversation_id}")
             except Exception as e:
                 logger.error(f"Error saving bot message: {str(e)}")
                 # Continue even if message saving fails
@@ -156,7 +157,7 @@ async def chat_with_paper(
                 "sender": "bot"
             }
             await insert_message(bot_message_data)
-            logger.info(f"Saved bot message for paper {paper_id}")
+            logger.info(f"Saved bot message for conversation {conversation_id}")
         except Exception as e:
             logger.error(f"Error saving bot message: {str(e)}")
             # Continue even if message saving fails
@@ -186,17 +187,19 @@ async def chat_with_paper(
 @router.get("/{paper_id}/messages", response_model=List[MessageResponse])
 async def get_paper_messages(
     paper_id: UUID,
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
+    conversation_id: Optional[str] = Query(None, description="Optional conversation ID to filter messages")
 ):
     """
-    Retrieve all messages for a paper's conversation.
+    Retrieve messages for a paper's conversations.
     
     Args:
         paper_id: The UUID of the paper
         user_id: The ID of the authenticated user
+        conversation_id: Optional conversation ID to filter messages for a specific conversation
         
     Returns:
-        A list of messages for the paper's conversation
+        A list of messages for the paper's conversations
         
     Raises:
         HTTPException: If paper not found or other errors occur
@@ -212,12 +215,15 @@ async def get_paper_messages(
             detail=f"Paper with ID {paper_id} not found"
         )
     
-    # The conversation ID is the same as the paper ID
-    conversation_id = str(paper_id)
-    
     try:
-        # Get messages for the conversation
-        messages = await get_conversation_messages(conversation_id)
+        # If conversation_id is provided, get messages for that specific conversation
+        if conversation_id:
+            messages = await get_conversation_messages(conversation_id)
+            logger.info(f"Retrieved {len(messages)} messages for conversation {conversation_id}")
+        else:
+            # For backward compatibility, use paper_id as conversation_id if no specific conversation_id is provided
+            messages = await get_conversation_messages(str(paper_id))
+            logger.info(f"Retrieved {len(messages)} messages using paper_id as conversation_id")
         
         # Convert to response model format
         return [

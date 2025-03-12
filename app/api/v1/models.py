@@ -77,6 +77,7 @@ class ChatSourceChunk(BaseModel):
 class ChatRequest(BaseModel):
     """Model for chat requests."""
     query: str = Field(..., description="The user's question about the paper", min_length=1, max_length=1000)
+    conversation_id: Optional[str] = Field(None, description="The ID of the conversation to associate the message with")
     
     @validator('query')
     def validate_query(cls, v):

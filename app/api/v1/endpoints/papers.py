@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks, Query, Request
 from typing import List, Optional, Dict, Any
 from uuid import UUID
+import uuid
 
 from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary
 from app.core.logger import get_logger
@@ -16,7 +17,8 @@ from app.database.supabase_client import (
     update_paper,
     list_papers as db_list_papers,
     add_paper_to_user,
-    create_conversation
+    create_conversation,
+    get_user_paper_conversations
 )
 from app.services.chunk_service import chunk_text
 from app.services.pinecone_service import store_chunks
@@ -73,14 +75,15 @@ async def submit_paper(
         
         # Check if a conversation exists for this paper, create one if not
         try:
-            # Create a conversation using the paper ID as the conversation ID
+            # Create a conversation with explicit paper_id
             await create_conversation({
-                "id": existing_paper["id"],
-                "user_id": user_id
+                "id": str(uuid.uuid4()),  # Generate a new unique ID for the conversation
+                "user_id": user_id,
+                "paper_id": existing_paper["id"]  # Explicitly set the paper_id
             })
             logger.info(f"Created conversation for existing paper with ID: {existing_paper['id']}")
         except Exception as e:
-            # If the conversation already exists, this will fail, but we can continue
+            # If the conversation creation fails, log the error but continue
             logger.warning(f"Could not create conversation for existing paper: {str(e)}")
         
         return existing_paper
@@ -108,10 +111,11 @@ async def submit_paper(
     
     # Create a conversation for this paper
     try:
-        # Create a conversation using the paper ID as the conversation ID
+        # Create a conversation with explicit paper_id
         await create_conversation({
-            "id": new_paper["id"],
-            "user_id": user_id
+            "id": str(uuid.uuid4()),  # Generate a new unique ID for the conversation
+            "user_id": user_id,
+            "paper_id": new_paper["id"]  # Explicitly set the paper_id
         })
         logger.info(f"Created conversation for new paper with ID: {new_paper['id']}")
     except Exception as e:
@@ -285,6 +289,47 @@ async def get_related_papers_for_paper(
     
     logger.info(f"Retrieved and stored related papers for paper with ID: {paper_id}")
     return related_papers
+
+
+@router.get("/{paper_id}/conversations", response_model=List[Dict[str, Any]])
+async def get_paper_conversations(
+    paper_id: UUID,
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Get all conversations for a specific paper and user.
+    
+    Args:
+        paper_id: The UUID of the paper
+        user_id: The ID of the authenticated user
+        
+    Returns:
+        List of conversations for the paper and user
+        
+    Raises:
+        HTTPException: If paper not found or other errors occur
+    """
+    # Verify the paper exists
+    paper = await get_paper_by_id(paper_id)
+    if not paper:
+        logger.warning(f"Paper with ID {paper_id} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Paper with ID {paper_id} not found"
+        )
+    
+    try:
+        # Get conversations for the user and paper
+        conversations = await get_user_paper_conversations(user_id, str(paper_id))
+        logger.info(f"Retrieved {len(conversations)} conversations for user {user_id} and paper {paper_id}")
+        
+        return conversations
+    except Exception as e:
+        logger.error(f"Error retrieving conversations for paper {paper_id} and user {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving conversations: {str(e)}"
+        )
 
 
 # Background processing function
