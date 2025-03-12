@@ -140,6 +140,56 @@ The API includes background processing for:
 - Finding related papers via the OpenAlex API
 - Generating multi-tiered summaries
 
+## Learning API Endpoints
+
+The PaperMastery backend now includes Learning API endpoints that provide personalized learning materials based on academic papers. These endpoints support:
+
+- Generation of personalized learning paths for papers
+- Access to various learning materials (text, videos, flashcards, quizzes)
+- User progress tracking
+- Quiz completion and evaluation
+
+### Learning API Routes
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/learning/papers/{paper_id}/learning-path` | GET | Get or generate a learning path for a paper |
+| `/api/v1/learning/papers/{paper_id}/materials` | GET | Get learning materials for a paper |
+| `/api/v1/learning/papers/{paper_id}/materials?difficulty_level=1` | GET | Get learning materials filtered by difficulty level (1-3) |
+| `/api/v1/learning/learning-items/{item_id}` | GET | Get a specific learning item by ID |
+| `/api/v1/learning/learning-items/{item_id}/progress` | POST | Record a user's progress on a learning item |
+| `/api/v1/learning/questions/{question_id}/answer` | POST | Submit an answer to a quiz question |
+| `/api/v1/learning/user/progress` | GET | Get a user's progress on learning materials |
+| `/api/v1/learning/papers/{paper_id}/generate-learning-path` | POST | Force generation of a new learning path |
+
+### External API Integrations
+
+The learning service integrates with several external APIs to provide rich educational content:
+
+- **YouTube API**: Fetches relevant educational videos
+- **OpenAI API**: Generates flashcards and quiz questions
+
+### Environment Variables
+
+Add the following environment variables to your `.env` file:
+
+```
+# YouTube API
+YOUTUBE_API_KEY=your_youtube_api_key
+
+# OpenAI API (if not already configured)
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-4o
+```
+
+### Testing the Learning API
+
+Run the tests for the learning API endpoints:
+
+```bash
+pytest tests/test_learning.py -v
+```
+
 ## API Documentation
 
 The API is fully documented using OpenAPI:

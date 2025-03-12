@@ -3,6 +3,7 @@ import re
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from uuid import UUID
+from enum import Enum
 
 class PaperSubmission(BaseModel):
     """Model for submitting an arXiv paper."""
@@ -89,4 +90,54 @@ class ChatResponse(BaseModel):
     response: str = Field(..., description="The AI-generated response to the query")
     query: str = Field(..., description="The original query that was asked")
     sources: List[ChatSourceChunk] = Field(..., description="The source chunks used to generate the response")
-    paper_id: UUID = Field(..., description="The ID of the paper that was queried") 
+    paper_id: UUID = Field(..., description="The ID of the paper that was queried")
+
+class LearningItemType(str, Enum):
+    TEXT = "text"
+    VIDEO = "video"
+    FLASHCARD = "flashcard"
+    QUIZ = "quiz"
+
+class LearningItem(BaseModel):
+    id: str
+    paper_id: str
+    type: LearningItemType
+    title: str
+    content: str
+    metadata: Dict[str, Any] = {}
+    difficulty_level: int = Field(1, ge=1, le=3)
+    
+class LearningPath(BaseModel):
+    id: str
+    paper_id: str
+    title: str
+    description: str
+    items: List[LearningItem]
+    created_at: str
+    estimated_time_minutes: int
+    
+class QuizQuestion(BaseModel):
+    question: str
+    options: List[str]
+    correct_answer: int
+    explanation: str
+
+class QuizAnswer(BaseModel):
+    selected_answer: int = Field(..., ge=0)
+    
+class AnswerResult(BaseModel):
+    is_correct: bool
+    correct_answer: int
+    explanation: str
+    user_id: str
+    question_id: str
+    selected_answer: int
+    timestamp: str
+    
+class UserProgressRecord(BaseModel):
+    id: str
+    user_id: str
+    item_id: str
+    status: str
+    time_spent_seconds: int
+    timestamp: str 
