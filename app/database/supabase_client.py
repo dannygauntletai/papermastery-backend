@@ -174,7 +174,7 @@ async def add_paper_to_user(user_id: str, paper_id: str) -> None:
         SupabaseError: If there's an error adding the association
     """
     try:
-        await supabase.table("users_papers").insert({
+        response = supabase.table("users_papers").insert({
             "user_id": user_id,
             "paper_id": paper_id
         }).execute()
