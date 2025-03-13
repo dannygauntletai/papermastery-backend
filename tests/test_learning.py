@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 import uuid
 from unittest.mock import patch, MagicMock
+import asyncio
 
 from app.main import app
 from app.api.dependencies import get_current_user
@@ -43,7 +44,7 @@ def test_get_learning_path(test_paper_id):
          patch('app.services.learning_service.generate_flashcards', return_value=_get_mock_flashcards()), \
          patch('app.services.learning_service.generate_quiz_questions', return_value=_get_mock_quiz_questions()):
         
-        response = client.get(f"/api/v1/learning/papers/{test_paper_id}/learning-path")
+        response = client.get(f"/api/v1/learning/papers/{test_paper_id}/learning-path?use_mock_for_tests=true")
         assert response.status_code == 200
         
         data = response.json()
@@ -60,10 +61,10 @@ def test_get_materials(test_paper_id):
          patch('app.services.learning_service.generate_quiz_questions', return_value=_get_mock_quiz_questions()):
         
         # Call the endpoint to ensure a learning path exists
-        client.get(f"/api/v1/learning/papers/{test_paper_id}/learning-path")
+        client.get(f"/api/v1/learning/papers/{test_paper_id}/learning-path?use_mock_for_tests=true")
         
         # Now test getting all materials
-        response = client.get(f"/api/v1/learning/papers/{test_paper_id}/materials")
+        response = client.get(f"/api/v1/learning/papers/{test_paper_id}/materials?use_mock_for_tests=true")
         assert response.status_code == 200
         
         data = response.json()
@@ -82,10 +83,10 @@ def test_get_materials_by_level(test_paper_id):
          patch('app.services.learning_service.generate_quiz_questions', return_value=_get_mock_quiz_questions()):
         
         # Call the endpoint to ensure a learning path exists
-        client.get(f"/api/v1/learning/papers/{test_paper_id}/learning-path")
+        client.get(f"/api/v1/learning/papers/{test_paper_id}/learning-path?use_mock_for_tests=true")
         
         # Test getting materials filtered by difficulty level
-        response = client.get(f"/api/v1/learning/papers/{test_paper_id}/materials?difficulty_level=1")
+        response = client.get(f"/api/v1/learning/papers/{test_paper_id}/materials?difficulty_level=1&use_mock_for_tests=true")
         assert response.status_code == 200
         
         data = response.json()
@@ -100,7 +101,7 @@ def test_get_learning_item(test_paper_id):
          patch('app.services.learning_service.generate_quiz_questions', return_value=_get_mock_quiz_questions()):
         
         # Call the endpoint to ensure a learning path exists
-        response = client.get(f"/api/v1/learning/papers/{test_paper_id}/learning-path")
+        response = client.get(f"/api/v1/learning/papers/{test_paper_id}/learning-path?use_mock_for_tests=true")
         data = response.json()
         
         # Get the ID of the first learning item
@@ -121,7 +122,7 @@ def test_record_progress(test_paper_id):
          patch('app.services.learning_service.generate_quiz_questions', return_value=_get_mock_quiz_questions()):
         
         # Call the endpoint to ensure a learning path exists
-        response = client.get(f"/api/v1/learning/papers/{test_paper_id}/learning-path")
+        response = client.get(f"/api/v1/learning/papers/{test_paper_id}/learning-path?use_mock_for_tests=true")
         data = response.json()
         
         # Get the ID of the first learning item
@@ -152,7 +153,7 @@ def test_submit_answer(test_paper_id):
          patch('app.services.learning_service.generate_quiz_questions', return_value=_get_mock_quiz_questions()):
         
         # Call the endpoint to ensure a learning path exists
-        response = client.get(f"/api/v1/learning/papers/{test_paper_id}/learning-path")
+        response = client.get(f"/api/v1/learning/papers/{test_paper_id}/learning-path?use_mock_for_tests=true")
         data = response.json()
         
         # Find a quiz question
@@ -203,7 +204,7 @@ def test_get_user_progress(test_paper_id):
          patch('app.services.learning_service.generate_quiz_questions', return_value=_get_mock_quiz_questions()):
         
         # Call the endpoint to ensure a learning path exists
-        response = client.get(f"/api/v1/learning/papers/{test_paper_id}/learning-path")
+        response = client.get(f"/api/v1/learning/papers/{test_paper_id}/learning-path?use_mock_for_tests=true")
         data = response.json()
         
         # Get the ID of the first learning item

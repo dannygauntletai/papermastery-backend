@@ -6,7 +6,7 @@ import uuid
 
 from app.main import app
 from app.api.v1.models import PaperMetadata, Author
-from app.dependencies import validate_environment
+from app.dependencies import validate_environment, get_current_user
 
 # Create a test client
 client = TestClient(app)
@@ -19,9 +19,14 @@ def mock_dependencies():
     async def mock_validate_environment():
         return True
     
+    # Override the get_current_user dependency to bypass authentication
+    async def mock_get_current_user(request=None):
+        return str(uuid.uuid4())  # Return a valid UUID string
+    
     # Save old overrides and update with our new ones
     old_overrides = app.dependency_overrides.copy()
     app.dependency_overrides[validate_environment] = mock_validate_environment
+    app.dependency_overrides[get_current_user] = mock_get_current_user
     
     yield
     
@@ -102,7 +107,11 @@ def mock_supabase_client():
                     with patch("app.api.v1.endpoints.papers.db_list_papers") as mock_list:
                         mock_list.return_value = [mock_paper]
                         
-                        yield paper_id
+                        # Mock add_paper_to_user to avoid foreign key constraint error
+                        with patch("app.api.v1.endpoints.papers.add_paper_to_user") as mock_add_to_user:
+                            mock_add_to_user.return_value = None
+                            
+                            yield paper_id
 
 @pytest.fixture
 def mock_related_papers():

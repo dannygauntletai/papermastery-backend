@@ -19,7 +19,7 @@ ArXiv Mastery Platform solves the challenge of understanding complex academic pa
 - **Vector Database**: Pinecone (for embedding storage and retrieval)
 - **Text Processing**: PyPDF2, LangChain, OpenAI embeddings
 - **APIs**: arXiv API, OpenAlex, Connected Papers, Semantic Scholar
-- **LLM Integration**: OpenAI API (GPT-4o)
+- **LLM Integration**: OpenAI API (GPT-4o), Google Gemini API
 
 ## Getting Started
 
@@ -28,7 +28,7 @@ ArXiv Mastery Platform solves the challenge of understanding complex academic pa
 - Python 3.8+
 - Supabase account
 - Pinecone account (with a properly configured index)
-- OpenAI API key
+- OpenAI API key or Google Gemini API key
 
 ### Installation
 
@@ -58,6 +58,10 @@ ArXiv Mastery Platform solves the challenge of understanding complex academic pa
    OPENAI_API_KEY=your_openai_api_key
    OPENAI_MODEL=gpt-4o
    
+   # Google Gemini API (alternative to OpenAI)
+   GEMINI_API_KEY=your_gemini_api_key
+   GEMINI_MODEL=gemini-1.5-pro
+   
    # Pinecone
    PINECONE_API_KEY=your_pinecone_api_key
    PINECONE_ENVIRONMENT=your_pinecone_environment (e.g., us-east-1)
@@ -74,7 +78,7 @@ ArXiv Mastery Platform solves the challenge of understanding complex academic pa
 ### Running the Application
 
 ```bash
-uvicorn app.main:app --reload
+python -m app.main
 ```
 
 The API will be available at http://localhost:8000
@@ -115,7 +119,11 @@ papermastery-backend/
 │   ├── services/              # Business logic
 │   ├── utils/                 # Helper functions
 │   └── database/              # Database clients
-├── tests/                     # Unit and integration tests
+├── tests/                     # All tests
+│   ├── unit/                  # Unit tests for isolated components
+│   ├── integration/           # Integration tests for multi-component flows
+│   └── __init__.py            # Test package initialization
+├── docs/                      # Documentation files
 ├── .env                       # Environment variables
 ├── requirements.txt           # Project dependencies
 ├── Dockerfile                 # Docker configuration
@@ -155,15 +163,19 @@ papermastery-backend/
 
 The application includes a conversational interface for interacting with academic papers:
 
-- `POST /api/v1/papers/{paper_id}/chat`: Ask questions about a specific paper
+- `POST /api/v1/chat/papers/{paper_id}/messages`: Send a message to chat about a specific paper
   - Uses RAG (Retrieval-Augmented Generation) to provide context-aware answers
   - Retrieves relevant chunks from the paper using Pinecone vector search
-  - Generates human-like responses using OpenAI's GPT models
+  - Generates human-like responses using LLM models (OpenAI GPT or Google Gemini)
+
+- `GET /api/v1/chat/papers/{paper_id}/messages`: Get chat history for a specific paper
+  - Returns all previous messages for a given conversation
 
 Example request:
 ```json
 {
-  "query": "What are the main conclusions of this paper?"
+  "content": "What are the main conclusions of this paper?",
+  "user_id": "user-123"
 }
 ```
 
@@ -176,7 +188,7 @@ The PaperMastery backend includes Learning API endpoints that provide personaliz
 - User progress tracking
 - Quiz completion and evaluation
 
-### Learning API Routes
+#### Learning API Routes
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -197,6 +209,7 @@ The API includes background processing for:
 - Generating embeddings and storing them in Pinecone
 - Finding related papers via the OpenAlex API
 - Generating multi-tiered summaries
+- Creating learning materials (flashcards, quizzes, video recommendations)
 
 ## External API Integrations
 
@@ -205,6 +218,9 @@ The application integrates with several external APIs to provide rich features:
 - **OpenAI API**: For embeddings generation and text completion
   - Used for generating embeddings with `text-embedding-3-large` model (3072 dimensions)
   - Used for text generation with GPT models (default: gpt-4o)
+
+- **Google Gemini API**: Alternative to OpenAI for text generation
+  - Used for text generation with Gemini model (default: gemini-1.5-pro)
 
 - **Pinecone API**: For vector storage and similarity search
   - Uses namespaces to organize vectors by paper ID
@@ -219,16 +235,21 @@ The application integrates with several external APIs to provide rich features:
 The application uses the following environment variables:
 
 ```
-# OpenAI API (required)
+# OpenAI API
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL=gpt-4o
+OPENAI_EMBEDDING_MODEL=text-embedding-3-large
 
-# Pinecone (required)
+# Google Gemini API (alternative to OpenAI)
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_MODEL=gemini-1.5-pro
+
+# Pinecone
 PINECONE_API_KEY=your_pinecone_api_key
 PINECONE_ENVIRONMENT=your_pinecone_environment (e.g., us-east-1)
 PINECONE_INDEX=your_pinecone_index_name
 
-# Supabase (required)
+# Supabase
 SUPABASE_URL=your_supabase_url
 SUPABASE_KEY=your_supabase_key
 
@@ -267,8 +288,31 @@ For detailed deployment instructions, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ### Testing
 
+The project uses pytest for testing and includes both unit and integration tests:
+
+- **Unit Tests**: Located in `tests/unit/`, these test individual components in isolation
+- **Integration Tests**: Located in `tests/integration/`, these test how components work together
+
+Run all tests with:
 ```bash
-pytest
+python -m pytest
+```
+
+Run tests with coverage:
+```bash
+python -m pytest --cov=app
+```
+
+Run specific test categories:
+```bash
+# Run only unit tests
+python -m pytest tests/unit/
+
+# Run only integration tests
+python -m pytest tests/integration/
+
+# Run a specific test file
+python -m pytest tests/unit/test_flashcards.py
 ```
 
 ### Code Style
@@ -277,6 +321,24 @@ We follow PEP 8 style guidelines. Run linting with:
 
 ```bash
 flake8
+```
+
+Format code with:
+```bash
+black app tests
+```
+
+Type checking with MyPy:
+```bash
+mypy app
+```
+
+### Pre-commit Hooks
+
+The project uses pre-commit hooks to ensure code quality. Install them with:
+
+```bash
+pre-commit install
 ```
 
 ## LangChain Integration
@@ -293,11 +355,12 @@ The system supports fallback from LangChain methods to direct Pinecone/OpenAI im
 
 ## Recent Updates
 
-- **Improved OpenAI API Key Handling**: Enhanced environment variable loading to ensure consistent API key usage across services
-- **Updated Pinecone Integration**: Migrated to the latest Pinecone SDK and implemented improved error handling
-- **Enhanced Vector Search**: Improved chunking and embedding strategies for more accurate retrieval
-- **LangChain Integration**: Added deeper integration with LangChain for PDF processing and RAG implementation
-- **Dimension Handling**: Added automatic dimension matching for embeddings to ensure compatibility with Pinecone indexes
+- **Reorganized Test Structure**: Separated tests into unit and integration directories for better organization
+- **Added Google Gemini Support**: Implemented alternative LLM provider alongside OpenAI
+- **Improved YouTube Video Integration**: Enhanced search query generation for more relevant educational videos
+- **Enhanced Error Handling**: Added more robust error handling and fallback mechanisms throughout the codebase
+- **Optimized Learning Path Generation**: Improved the generation and caching of learning materials
+- **Improved LLM Interactions**: Better prompting and context management for higher quality AI responses
 
 ## License
 
@@ -309,4 +372,5 @@ The system supports fallback from LangChain methods to direct Pinecone/OpenAI im
 - [Supabase](https://supabase.io/) for database and authentication
 - [Pinecone](https://www.pinecone.io/) for vector search capabilities
 - [OpenAI](https://openai.com/) for powerful language models and embeddings
+- [Google AI](https://ai.google/) for Gemini models
 - [LangChain](https://langchain.com/) for RAG components and PDF processing utilities 

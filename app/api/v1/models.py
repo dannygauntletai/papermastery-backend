@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, HttpUrl, validator
 import re
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Union
 from datetime import datetime
 from uuid import UUID
 from enum import Enum
@@ -10,6 +10,7 @@ class PaperSubmission(BaseModel):
     arxiv_link: HttpUrl = Field(..., description="URL to the arXiv paper")
     
     @validator('arxiv_link')
+    @classmethod
     def validate_arxiv_link(cls, v):
         """Validate that the URL is an arXiv link."""
         # Convert to string for regex matching
@@ -28,7 +29,7 @@ class PaperMetadata(BaseModel):
     arxiv_id: str
     title: str
     authors: List[Author]
-    abstract: str
+    abstract: str 
     publication_date: datetime
     categories: Optional[List[str]] = None
     doi: Optional[str] = None
@@ -39,76 +40,202 @@ class PaperSummary(BaseModel):
     intermediate: str
     advanced: str
     
-class PaperResponse(BaseModel):
-    """Model for paper response."""
-    id: UUID
+class PaperBase(BaseModel):
+    """Base model for paper attributes."""
     arxiv_id: str
     title: str
     authors: List[Author]
     abstract: str
     publication_date: datetime
+    full_text: Optional[str] = None
+    embedding_id: Optional[str] = None
+
+class PaperCreate(PaperBase):
+    """Model for creating a paper entry."""
+    pass
+
+class Paper(PaperBase):
+    """Complete paper model matching the database schema."""
+    id: UUID
     summaries: Optional[PaperSummary] = None
     related_papers: Optional[List[Dict[str, Any]]] = None
     tags: Optional[Dict[str, Any]] = None
-    
-class LearningMaterial(BaseModel):
-    """Model for learning materials."""
-    id: UUID
-    paper_id: UUID
-    type: str  # 'quiz', 'text', 'flashcard'
-    level: str  # 'beginner', 'intermediate', 'advanced'
-    category: str  # 'math', 'physics', etc.
-    data: Dict[str, Any]
-    order: int
-    videos: Optional[List[Dict[str, str]]] = None
-    
-class LearningPath(BaseModel):
-    """Model for learning paths."""
-    paper_id: UUID
-    materials: List[LearningMaterial]
-    estimated_time_minutes: int
 
-class ChatSourceChunk(BaseModel):
-    """Model for a source chunk used in chat responses."""
-    chunk_id: str
-    text: str
-    metadata: Optional[Dict[str, Any]] = None
+    class Config:
+        from_attributes = True
 
-class ChatRequest(BaseModel):
-    """Model for chat requests."""
-    query: str = Field(..., description="The user's question about the paper", min_length=1, max_length=1000)
-    conversation_id: Optional[str] = Field(None, description="The ID of the conversation to associate the message with")
-    
-    @validator('query')
-    def validate_query(cls, v):
-        """Validate that the query is not empty and is a reasonable length."""
-        if len(v.strip()) == 0:
-            raise ValueError("Query cannot be empty")
-        return v
+class PaperResponse(Paper):
+    """Model for paper response in API."""
+    pass
 
-class ChatResponse(BaseModel):
-    """Model for chat responses."""
-    response: str = Field(..., description="The AI-generated response to the query")
-    query: str = Field(..., description="The original query that was asked")
-    sources: List[ChatSourceChunk] = Field(..., description="The source chunks used to generate the response")
-    paper_id: UUID = Field(..., description="The ID of the paper that was queried")
+# Flashcard and Quiz models
+class CardItem(BaseModel):
+    """Model for flashcard item."""
+    front: str
+    back: str
 
-class MessageResponse(BaseModel):
-    """Model for message responses in a conversation."""
-    id: str = Field(..., description="The unique identifier for the message")
-    text: str = Field(..., description="The content of the message")
-    sender: str = Field(..., description="The sender of the message (user or bot)")
-    created_at: str = Field(..., description="The timestamp when the message was created")
-    paper_id: str = Field(..., description="The ID of the paper associated with the message")
-    conversation_id: str = Field(..., description="The ID of the conversation the message belongs to")
+class QuestionItem(BaseModel):
+    """Model for quiz question."""
+    question: str
+    options: List[str]
+    correct_answer: int
+    explanation: Optional[str] = None
 
+# API models for learning materials
 class LearningItemType(str, Enum):
+    """Enum for learning item types."""
     TEXT = "text"
     VIDEO = "video"
     FLASHCARD = "flashcard"
     QUIZ = "quiz"
 
+class ItemLevel(str, Enum):
+    """Enum for item difficulty levels."""
+    BEGINNER = "beginner"
+    INTERMEDIATE = "intermediate"
+    ADVANCED = "advanced"
+
+class ItemCategory(str, Enum):
+    """Enum for item categories."""
+    MATH = "math"
+    PHYSICS = "physics"
+    COMPUTER_SCIENCE = "computer-science"
+    ARTIFICIAL_INTELLIGENCE = "artificial-intelligence"
+    NATURAL_LANGUAGE_PROCESSING = "natural-language-processing"
+    GENERAL = "general"
+
+# Database Models
+class ItemBase(BaseModel):
+    """Base model for learning items."""
+    paper_id: UUID
+    type: str
+    level: str
+    category: str
+    data: Dict[str, Any]
+    order: int
+    videos: Optional[List[Dict[str, str]]] = None
+
+class ItemCreate(ItemBase):
+    """Model for creating a learning item."""
+    pass
+
+class Item(ItemBase):
+    """Complete item model matching the database schema."""
+    id: UUID
+
+    class Config:
+        from_attributes = True
+
+class QuestionBase(BaseModel):
+    """Base model for questions."""
+    item_id: UUID
+    type: str
+    text: str
+    choices: Optional[List[str]] = None
+    correct_answer: str
+
+class QuestionCreate(QuestionBase):
+    """Model for creating a question."""
+    pass
+
+class Question(QuestionBase):
+    """Complete question model matching the database schema."""
+    id: UUID
+
+    class Config:
+        from_attributes = True
+
+class AnswerBase(BaseModel):
+    """Base model for user answers."""
+    user_id: UUID
+    question_id: UUID
+    answer: str
+
+class AnswerCreate(AnswerBase):
+    """Model for creating an answer record."""
+    pass
+
+class Answer(AnswerBase):
+    """Complete answer model matching the database schema."""
+    id: UUID
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
+class ProgressBase(BaseModel):
+    """Base model for user progress."""
+    user_id: UUID
+    item_id: UUID
+    status: str
+    sprt_log_likelihood_ratio: float = 0.0
+    decision: str = "in_progress"
+    time_spent_seconds: Optional[int] = 0
+
+class ProgressCreate(ProgressBase):
+    """Model for creating a progress record."""
+    pass
+
+class Progress(ProgressBase):
+    """Complete progress model matching the database schema."""
+    class Config:
+        from_attributes = True
+
+class BadgeBase(BaseModel):
+    """Base model for badges."""
+    name: str
+    description: Optional[str] = None
+
+class BadgeCreate(BadgeBase):
+    """Model for creating a badge."""
+    pass
+
+class Badge(BadgeBase):
+    """Complete badge model matching the database schema."""
+    id: UUID
+
+    class Config:
+        from_attributes = True
+
+class AchievementBase(BaseModel):
+    """Base model for achievements."""
+    user_id: UUID
+    badge_id: UUID
+
+class AchievementCreate(AchievementBase):
+    """Model for creating an achievement record."""
+    pass
+
+class Achievement(AchievementBase):
+    """Complete achievement model matching the database schema."""
+    id: UUID
+    awarded_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class QueryBase(BaseModel):
+    """Base model for user queries."""
+    user_id: UUID
+    paper_id: UUID
+    question_text: str
+    answer_text: Optional[str] = None
+
+class QueryCreate(QueryBase):
+    """Model for creating a query record."""
+    pass
+
+class Query(QueryBase):
+    """Complete query model matching the database schema."""
+    id: UUID
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
+# API Models
 class LearningItem(BaseModel):
+    """API model for learning items."""
     id: str
     paper_id: str
     type: LearningItemType
@@ -116,8 +243,9 @@ class LearningItem(BaseModel):
     content: str
     metadata: Dict[str, Any] = {}
     difficulty_level: int = Field(1, ge=1, le=3)
-    
+
 class LearningPath(BaseModel):
+    """API model for learning paths."""
     id: str
     paper_id: str
     title: str
@@ -125,17 +253,13 @@ class LearningPath(BaseModel):
     items: List[LearningItem]
     created_at: str
     estimated_time_minutes: int
-    
-class QuizQuestion(BaseModel):
-    question: str
-    options: List[str]
-    correct_answer: int
-    explanation: str
 
 class QuizAnswer(BaseModel):
+    """API model for quiz answers."""
     selected_answer: int = Field(..., ge=0)
-    
+
 class AnswerResult(BaseModel):
+    """API model for answer results."""
     is_correct: bool
     correct_answer: int
     explanation: str
@@ -143,11 +267,45 @@ class AnswerResult(BaseModel):
     question_id: str
     selected_answer: int
     timestamp: str
-    
+
 class UserProgressRecord(BaseModel):
+    """API model for user progress records."""
     id: str
     user_id: str
     item_id: str
     status: str
     time_spent_seconds: int
-    timestamp: str 
+    timestamp: str
+
+# Chat models
+class ChatRequest(BaseModel):
+    """Model for chat requests."""
+    query: str
+    conversation_id: Optional[str] = None
+    include_sources: bool = True
+    
+class MessageSource(BaseModel):
+    """Model for message sources."""
+    text: str
+    page: Optional[int] = None
+    position: Optional[Dict[str, Any]] = None
+    
+class MessageResponse(BaseModel):
+    """Model for individual messages in a conversation."""
+    id: str
+    user_id: str
+    paper_id: str
+    conversation_id: str
+    query: str
+    response: str
+    sources: Optional[List[MessageSource]] = None
+    timestamp: datetime
+    
+    class Config:
+        from_attributes = True
+        
+class ChatResponse(BaseModel):
+    """Model for chat response."""
+    conversation_id: str
+    response: str
+    sources: Optional[List[MessageSource]] = None 

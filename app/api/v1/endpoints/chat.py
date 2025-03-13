@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, status, Request, Query
 from typing import List, Dict, Any, Optional
 from uuid import UUID
 
-from app.api.v1.models import ChatRequest, ChatResponse, MessageResponse
+from app.api.v1.models import ChatRequest, ChatResponse, MessageResponse, MessageSource
 from app.core.logger import get_logger
 from app.database.supabase_client import get_paper_by_id, insert_message, get_conversation, create_conversation, get_conversation_messages
 from app.services.pinecone_service import search_similar_chunks
@@ -133,9 +133,8 @@ async def chat_with_paper(
             
             return ChatResponse(
                 response=default_response,
-                query=chat_request.query,
-                sources=[],
-                paper_id=paper_id
+                conversation_id=conversation_id,
+                sources=[]
             )
             
         # Generate response based on chunks and/or PDF
@@ -163,12 +162,22 @@ async def chat_with_paper(
             logger.error(f"Error saving bot message: {str(e)}")
             # Continue even if message saving fails
         
+        # Extract sources from the response_data and convert to the new MessageSource format
+        message_sources = []
+        for source in response_data["sources"]:
+            # Convert from the old format to the new MessageSource format
+            message_source = MessageSource(
+                text=source.get("text", ""),
+                page=source.get("metadata", {}).get("page_number"),
+                position=source.get("metadata", {})
+            )
+            message_sources.append(message_source)
+        
         # Construct the chat response
         return ChatResponse(
             response=response_data["response"],
-            query=chat_request.query,
-            sources=response_data["sources"],  # Use the sources from the response
-            paper_id=paper_id
+            conversation_id=conversation_id,
+            sources=message_sources
         )
         
     except Exception as e:
@@ -223,11 +232,13 @@ async def get_paper_messages(
         return [
             MessageResponse(
                 id=message.get("id"),
-                text=message.get("text"),
-                sender=message.get("sender"),
-                created_at=message.get("created_at"),
+                user_id=message.get("user_id", user_id),  # Use the current user_id as fallback
                 paper_id=message.get("paper_id"),
-                conversation_id=message.get("conversation_id")
+                conversation_id=message.get("conversation_id"),
+                query=message.get("text") if message.get("sender") == "user" else "",
+                response=message.get("text") if message.get("sender") == "bot" else "",
+                sources=None,  # No sources available in the existing message format
+                timestamp=message.get("created_at")
             )
             for message in messages
         ]

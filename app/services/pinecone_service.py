@@ -212,6 +212,12 @@ async def store_chunks_langchain(
         PineconeError: If there's an error storing chunks in Pinecone
     """
     
+    global index, pc
+    
+    if index is None:
+        logger.error("Pinecone index not initialized")
+        raise PineconeError("Pinecone index not initialized")
+    
     try:
         logger.info(f"Storing {len(chunks)} chunks in Pinecone using LangChain for paper ID: {paper_id}")
         

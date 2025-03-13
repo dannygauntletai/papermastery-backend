@@ -1,0 +1,408 @@
+{
+  "api_title": "PaperMastery API",
+  "api_version": "0.2.0",
+  "api_description": "API for transforming arXiv papers into personalized learning experiences with PDF processing, vector embeddings, RAG, tiered summaries, and interactive learning paths.",
+  "endpoints": {
+    "papers": [
+      {
+        "path": "/papers/submit",
+        "method": "POST",
+        "description": "Submit an arXiv paper for processing. The submission is accepted immediately, and processing happens in the background.",
+        "request_body": {
+          "arxiv_link": "URL to the arXiv paper (e.g., https://arxiv.org/abs/2203.12345)"
+        },
+        "response_model": "PaperResponse",
+        "response_example": {
+          "id": "uuid",
+          "arxiv_id": "2203.12345",
+          "title": "Paper Title",
+          "authors": [{"name": "Author Name", "affiliations": ["University"]}],
+          "abstract": "Paper abstract text",
+          "publication_date": "2023-03-15T00:00:00Z",
+          "tags": {"status": "pending"}
+        }
+      },
+      {
+        "path": "/papers/{paper_id}",
+        "method": "GET",
+        "description": "Retrieve a paper by its ID",
+        "path_params": {
+          "paper_id": "UUID of the paper"
+        },
+        "response_model": "PaperResponse"
+      },
+      {
+        "path": "/papers",
+        "method": "GET",
+        "description": "List all papers accessible to the current user",
+        "response_model": "Array of PaperResponse"
+      },
+      {
+        "path": "/papers/{paper_id}/summaries",
+        "method": "GET",
+        "description": "Get beginner, intermediate, and advanced summaries for a paper",
+        "path_params": {
+          "paper_id": "UUID of the paper"
+        },
+        "response_model": "PaperSummary",
+        "response_example": {
+          "beginner": "Simple explanation of the paper",
+          "intermediate": "More detailed explanation with some technical terms",
+          "advanced": "Full technical explanation with all details"
+        }
+      },
+      {
+        "path": "/papers/{paper_id}/related",
+        "method": "GET",
+        "description": "Get papers related to the specified paper",
+        "path_params": {
+          "paper_id": "UUID of the paper"
+        },
+        "response_model": "Array of related paper objects"
+      },
+      {
+        "path": "/papers/{paper_id}/conversations",
+        "method": "GET",
+        "description": "Get all conversations associated with a paper for the current user",
+        "path_params": {
+          "paper_id": "UUID of the paper"
+        },
+        "response_model": "Array of conversation objects"
+      },
+      {
+        "path": "/papers/{paper_id}/chat",
+        "method": "POST",
+        "description": "Chat with a paper by asking questions about its content",
+        "path_params": {
+          "paper_id": "UUID of the paper"
+        },
+        "request_body": {
+          "query": "What are the main findings of this paper?",
+          "conversation_id": "optional-conversation-id",
+          "include_sources": true
+        },
+        "response_model": "ChatResponse",
+        "response_example": {
+          "conversation_id": "string",
+          "response": "The main findings of this paper are...",
+          "sources": [
+            {
+              "text": "Source text from the paper",
+              "page": 3,
+              "position": {"top": 100, "left": 50}
+            }
+          ]
+        }
+      },
+      {
+        "path": "/papers/{paper_id}/messages",
+        "method": "GET",
+        "description": "Get all messages from conversations about a paper",
+        "path_params": {
+          "paper_id": "UUID of the paper"
+        },
+        "query_params": {
+          "conversation_id": "Optional conversation ID to filter messages"
+        },
+        "response_model": "Array of MessageResponse"
+      }
+    ],
+    "learning": [
+      {
+        "path": "/learning/papers/{paper_id}/learning-path",
+        "method": "GET",
+        "description": "Get a structured learning path for a paper",
+        "path_params": {
+          "paper_id": "ID of the paper"
+        },
+        "query_params": {
+          "use_mock_for_tests": "Boolean to use mock data for tests (default: false)"
+        },
+        "response_model": "LearningPath",
+        "response_example": {
+          "id": "string",
+          "paper_id": "string",
+          "title": "Learning Path for Paper Title",
+          "description": "A structured path to understand this paper",
+          "items": [
+            {
+              "id": "string",
+              "paper_id": "string",
+              "type": "text",
+              "title": "Item Title",
+              "content": "Item content text",
+              "metadata": {},
+              "difficulty_level": 1
+            }
+          ],
+          "created_at": "2023-03-15T00:00:00Z",
+          "estimated_time_minutes": 60
+        }
+      },
+      {
+        "path": "/learning/papers/{paper_id}/materials",
+        "method": "GET",
+        "description": "Get learning materials for a paper, optionally filtered by difficulty level",
+        "path_params": {
+          "paper_id": "ID of the paper"
+        },
+        "query_params": {
+          "difficulty_level": "Optional integer (1-3) to filter materials by difficulty",
+          "use_mock_for_tests": "Boolean to use mock data for tests (default: false)"
+        },
+        "response_model": "Array of LearningItem"
+      },
+      {
+        "path": "/learning/learning-items/{item_id}",
+        "method": "GET",
+        "description": "Get a specific learning item by its ID",
+        "path_params": {
+          "item_id": "ID of the learning item"
+        },
+        "response_model": "LearningItem"
+      },
+      {
+        "path": "/learning/learning-items/{item_id}/progress",
+        "method": "POST",
+        "description": "Record a user's progress on a learning item",
+        "path_params": {
+          "item_id": "ID of the learning item"
+        },
+        "request_body": {
+          "status": "in_progress|completed",
+          "time_spent_seconds": 120,
+          "sprt_log_likelihood_ratio": 0.0,
+          "decision": "in_progress|mastered|needs_review"
+        },
+        "response_code": 204
+      },
+      {
+        "path": "/learning/questions/{question_id}/answer",
+        "method": "POST",
+        "description": "Submit an answer to a quiz question",
+        "path_params": {
+          "question_id": "ID of the quiz question"
+        },
+        "request_body": {
+          "selected_answer": 2
+        },
+        "response_model": "AnswerResult",
+        "response_example": {
+          "is_correct": true,
+          "correct_answer": 2,
+          "explanation": "This is correct because...",
+          "user_id": "string",
+          "question_id": "string",
+          "selected_answer": 2,
+          "timestamp": "2023-03-15T00:00:00Z"
+        }
+      },
+      {
+        "path": "/learning/user/progress",
+        "method": "GET",
+        "description": "Get a user's progress on learning materials",
+        "query_params": {
+          "paper_id": "Optional paper ID to filter progress by paper"
+        },
+        "response_model": "Array of UserProgressRecord"
+      },
+      {
+        "path": "/learning/papers/{paper_id}/generate-learning-path",
+        "method": "POST",
+        "description": "Generate a new learning path for a paper, even if one already exists",
+        "path_params": {
+          "paper_id": "ID of the paper"
+        },
+        "response_model": "LearningPath"
+      },
+      {
+        "path": "/learning/papers/{paper_id}/flashcards",
+        "method": "GET",
+        "description": "Get flashcards for a paper",
+        "path_params": {
+          "paper_id": "ID of the paper"
+        },
+        "query_params": {
+          "use_mock_for_tests": "Boolean to use mock data for tests (default: false)"
+        },
+        "response_model": "Array of CardItem",
+        "response_example": [
+          {
+            "front": "What is supervised learning?",
+            "back": "A type of machine learning where the model is trained on labeled data"
+          }
+        ]
+      },
+      {
+        "path": "/learning/papers/{paper_id}/quiz-questions",
+        "method": "GET",
+        "description": "Get quiz questions for a paper",
+        "path_params": {
+          "paper_id": "ID of the paper"
+        },
+        "query_params": {
+          "use_mock_for_tests": "Boolean to use mock data for tests (default: false)"
+        },
+        "response_model": "Array of QuestionItem",
+        "response_example": [
+          {
+            "question": "What is the purpose of regularization in machine learning?",
+            "options": [
+              "To increase model complexity",
+              "To prevent overfitting",
+              "To speed up convergence",
+              "To allow for larger batch sizes"
+            ],
+            "correct_answer": 1,
+            "explanation": "Regularization adds a penalty to the loss function to discourage complex models"
+          }
+        ]
+      }
+    ]
+  },
+  "models": {
+    "PaperSubmission": {
+      "description": "Model for submitting an arXiv paper",
+      "fields": {
+        "arxiv_link": {"type": "HttpUrl", "description": "URL to the arXiv paper"}
+      }
+    },
+    "PaperResponse": {
+      "description": "Complete paper model with all attributes",
+      "fields": {
+        "id": {"type": "UUID", "description": "UUID of the paper"},
+        "arxiv_id": {"type": "string", "description": "arXiv identifier"},
+        "title": {"type": "string", "description": "Paper title"},
+        "authors": {"type": "Array of Author", "description": "List of author objects with names and affiliations"},
+        "abstract": {"type": "string", "description": "Paper abstract"},
+        "publication_date": {"type": "datetime", "description": "When the paper was published"},
+        "full_text": {"type": "string", "description": "Optional full text of the paper", "optional": true},
+        "embedding_id": {"type": "string", "description": "Optional ID for vector embeddings", "optional": true},
+        "related_papers": {"type": "Array", "description": "Optional list of related papers", "optional": true},
+        "tags": {"type": "Object", "description": "Optional metadata tags (including processing status)", "optional": true},
+        "summaries": {"type": "PaperSummary", "description": "Optional paper summaries at different levels", "optional": true}
+      }
+    },
+    "PaperSummary": {
+      "description": "Model for paper summaries at different levels",
+      "fields": {
+        "beginner": {"type": "string", "description": "Simplified summary for beginners"},
+        "intermediate": {"type": "string", "description": "More detailed summary with some technical terms"},
+        "advanced": {"type": "string", "description": "Full technical summary"}
+      }
+    },
+    "Author": {
+      "description": "Model for paper authors",
+      "fields": {
+        "name": {"type": "string", "description": "Author's name"},
+        "affiliations": {"type": "Array of string", "description": "Author's affiliations", "optional": true}
+      }
+    },
+    "LearningPath": {
+      "description": "Model for structured learning paths",
+      "fields": {
+        "id": {"type": "string", "description": "Path identifier"},
+        "paper_id": {"type": "string", "description": "ID of the associated paper"},
+        "title": {"type": "string", "description": "Path title"},
+        "description": {"type": "string", "description": "Path description"},
+        "items": {"type": "Array of LearningItem", "description": "List of learning items"},
+        "created_at": {"type": "string", "description": "Creation timestamp"},
+        "estimated_time_minutes": {"type": "integer", "description": "Estimated completion time"}
+      }
+    },
+    "LearningItem": {
+      "description": "Model for individual learning materials",
+      "fields": {
+        "id": {"type": "string", "description": "Item identifier"},
+        "paper_id": {"type": "string", "description": "ID of the associated paper"},
+        "type": {"type": "enum", "description": "Item type", "enum_values": ["text", "video", "flashcard", "quiz"]},
+        "title": {"type": "string", "description": "Item title"},
+        "content": {"type": "string", "description": "Item content"},
+        "metadata": {"type": "object", "description": "Additional metadata"},
+        "difficulty_level": {"type": "integer", "description": "Difficulty level (1-3)", "minimum": 1, "maximum": 3}
+      }
+    },
+    "CardItem": {
+      "description": "Model for flashcard items",
+      "fields": {
+        "front": {"type": "string", "description": "Text for the front of the card"},
+        "back": {"type": "string", "description": "Text for the back of the card"}
+      }
+    },
+    "QuestionItem": {
+      "description": "Model for quiz questions",
+      "fields": {
+        "question": {"type": "string", "description": "Question text"},
+        "options": {"type": "Array of string", "description": "List of possible answers"},
+        "correct_answer": {"type": "integer", "description": "Index of the correct answer"},
+        "explanation": {"type": "string", "description": "Optional explanation of the correct answer", "optional": true}
+      }
+    },
+    "UserProgressRecord": {
+      "description": "Model for tracking user progress",
+      "fields": {
+        "id": {"type": "string", "description": "Record identifier"},
+        "user_id": {"type": "string", "description": "ID of the user"},
+        "item_id": {"type": "string", "description": "ID of the learning item"},
+        "status": {"type": "string", "description": "Progress status"},
+        "time_spent_seconds": {"type": "integer", "description": "Time spent on the item"},
+        "timestamp": {"type": "string", "description": "When the progress was recorded"}
+      }
+    },
+    "ChatRequest": {
+      "description": "Model for chat requests",
+      "fields": {
+        "query": {"type": "string", "description": "The user's question"},
+        "conversation_id": {"type": "string", "description": "Optional conversation ID for context", "optional": true},
+        "include_sources": {"type": "boolean", "description": "Whether to include source quotes in the response", "default": true}
+      }
+    },
+    "ChatResponse": {
+      "description": "Model for chat responses",
+      "fields": {
+        "conversation_id": {"type": "string", "description": "ID of the conversation"},
+        "response": {"type": "string", "description": "Response text"},
+        "sources": {"type": "Array of MessageSource", "description": "Optional list of source quotes from the paper", "optional": true}
+      }
+    },
+    "MessageResponse": {
+      "description": "Model for individual chat messages",
+      "fields": {
+        "id": {"type": "string", "description": "Message identifier"},
+        "user_id": {"type": "string", "description": "ID of the user"},
+        "paper_id": {"type": "string", "description": "ID of the paper"},
+        "conversation_id": {"type": "string", "description": "ID of the conversation"},
+        "query": {"type": "string", "description": "User's question"},
+        "response": {"type": "string", "description": "System's response"},
+        "sources": {"type": "Array of MessageSource", "description": "Optional list of source quotes", "optional": true},
+        "timestamp": {"type": "datetime", "description": "When the message was created"}
+      }
+    },
+    "MessageSource": {
+      "description": "Model for message sources",
+      "fields": {
+        "text": {"type": "string", "description": "Source text from the paper"},
+        "page": {"type": "integer", "description": "Page number where the source was found", "optional": true},
+        "position": {"type": "object", "description": "Position of the source on the page", "optional": true}
+      }
+    },
+    "QuizAnswer": {
+      "description": "Model for quiz answers",
+      "fields": {
+        "selected_answer": {"type": "integer", "description": "Index of the selected answer", "minimum": 0}
+      }
+    },
+    "AnswerResult": {
+      "description": "Model for answer results",
+      "fields": {
+        "is_correct": {"type": "boolean", "description": "Whether the answer is correct"},
+        "correct_answer": {"type": "integer", "description": "Index of the correct answer"},
+        "explanation": {"type": "string", "description": "Explanation of the correct answer"},
+        "user_id": {"type": "string", "description": "ID of the user"},
+        "question_id": {"type": "string", "description": "ID of the question"},
+        "selected_answer": {"type": "integer", "description": "Index of the selected answer"},
+        "timestamp": {"type": "string", "description": "When the answer was submitted"}
+      }
+    }
+  }
+} 

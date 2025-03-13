@@ -23,6 +23,7 @@ from app.database.supabase_client import (
 from app.services.chunk_service import chunk_text
 from app.services.pinecone_service import store_chunks
 from app.services.summarization_service import generate_summaries
+from app.services.learning_service import generate_learning_path
 from app.dependencies import validate_environment, get_current_user
 
 logger = get_logger(__name__)
@@ -344,7 +345,8 @@ async def process_paper_in_background(arxiv_id: str, paper_id: UUID):
     4. Generates embeddings and stores them in Pinecone
     5. Finds related papers
     6. Generates summaries
-    7. Updates the paper in the database
+    7. Generates learning materials (videos, flashcards, quizzes)
+    8. Updates the paper in the database
     
     Args:
         arxiv_id: The arXiv ID of the paper
@@ -393,6 +395,19 @@ async def process_paper_in_background(arxiv_id: str, paper_id: UUID):
             chunks=chunks
         )
         
+        # Generate learning materials (videos, flashcards, quizzes)
+        try:
+            learning_path = await generate_learning_path(str(paper_id))
+            logger.info(f"Successfully generated learning materials for paper ID: {paper_id}")
+            has_learning_materials = True
+            learning_materials_count = len(learning_path.items) if learning_path and learning_path.items else 0
+        except Exception as learning_error:
+            logger.error(f"Error generating learning materials for paper ID {paper_id}: {str(learning_error)}")
+            error_message = error_message or f"Learning materials error: {str(learning_error)[:200]}"
+            has_learning_materials = False
+            learning_materials_count = 0
+            # Continue processing despite learning materials generation error
+        
         # Update the paper in the database
         update_data = {
             "full_text": full_text[:1000],  # Store first 1000 chars as preview
@@ -402,7 +417,11 @@ async def process_paper_in_background(arxiv_id: str, paper_id: UUID):
                 "advanced": summaries.advanced
             },
             "chunk_count": len(chunks),
-            "tags": {"status": "completed"}
+            "tags": {
+                "status": "completed",
+                "has_learning_materials": has_learning_materials,
+                "learning_materials_count": learning_materials_count
+            }
         }
         
         # Add embedding_id and related_papers if they were successfully retrieved
