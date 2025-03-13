@@ -29,3 +29,5 @@ typing-extensions>=4.3.0
 pydantic-settings>=2.8.1
 openai>=1.66.2
 google-generativeai>=0.3.1
+sendgrid>=6.11.0
+email_validator>=2.2.0

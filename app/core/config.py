@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # YouTube API configuration
     YOUTUBE_API_KEY: str = Field(default_factory=lambda: os.getenv("YOUTUBE_API_KEY", ""))
     
+    # SendGrid configuration
+    SENDGRID_API_KEY: str = Field(default_factory=lambda: os.getenv("SENDGRID_API_KEY", ""))
+    SENDGRID_FROM_EMAIL: str = Field(default_factory=lambda: os.getenv("SENDGRID_FROM_EMAIL", ""))
+    
     # Learning services configuration
     ANKIFLASHCARDS_API_KEY: str = Field(default_factory=lambda: os.getenv("ANKIFLASHCARDS_API_KEY", ""))
     PAPERQA_API_KEY: str = Field(default_factory=lambda: os.getenv("PAPERQA_API_KEY", ""))
@@ -87,6 +91,8 @@ OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o")
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
+SENDGRID_API_KEY: str = os.getenv("SENDGRID_API_KEY", "")
+SENDGRID_FROM_EMAIL: str = os.getenv("SENDGRID_FROM_EMAIL", "")
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 APP_ENV: str = os.getenv("APP_ENV", "development")
 

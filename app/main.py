@@ -18,6 +18,7 @@ from app.dependencies import validate_environment
 from app.api.v1.endpoints.papers import router as papers_router
 from app.api.v1.endpoints.chat import router as chat_router
 from app.api.v1.endpoints.learning import router as learning_router
+from app.api.v1.endpoints.waiting_list import router as waiting_list_router
 import inspect
 from typing import Callable, Dict, Any, List, Optional
 import time
@@ -48,15 +49,19 @@ app = FastAPI(
         },
         {
             "name": "learning",
-            "description": "Operations related to learning paths and educational materials"
+            "description": "Operations related to learning paths, quizzes, and educational content"
         },
         {
             "name": "chat",
-            "description": "Chat with papers using RAG (Retrieval-Augmented Generation) to get AI-generated answers"
+            "description": "Operations related to chat functionality with papers"
+        },
+        {
+            "name": "waiting-list",
+            "description": "Operations related to the waiting list for Paper Mastery"
         },
         {
             "name": "system",
-            "description": "System status and health endpoints"
+            "description": "System-level operations like health checks"
         }
     ]
 )
@@ -102,9 +107,10 @@ async def health_check():
 
 
 # Include API routers - use standard APIRoute
-app.include_router(papers_router, prefix="/api/v1")
-app.include_router(chat_router, prefix="/api/v1")
-app.include_router(learning_router, prefix="/api/v1")
+app.include_router(papers_router, prefix="/api/v1/papers", tags=["papers"])
+app.include_router(chat_router, prefix="/api/v1/chat", tags=["chat"])
+app.include_router(learning_router, prefix="/api/v1/learning", tags=["learning"])
+app.include_router(waiting_list_router, prefix="/api/v1/waiting-list", tags=["waiting-list"])
 
 # Custom OpenAPI schema to properly document the API
 def custom_openapi():
@@ -509,6 +515,10 @@ def custom_openapi():
         {
             "name": "chat",
             "description": "Chat with papers, ask questions, and get AI-generated answers"
+        },
+        {
+            "name": "waiting-list",
+            "description": "Operations related to the waiting list for Paper Mastery"
         }
     ]
     
