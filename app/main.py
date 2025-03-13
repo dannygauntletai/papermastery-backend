@@ -107,10 +107,10 @@ async def health_check():
 
 
 # Include API routers - use standard APIRoute
-app.include_router(papers_router, prefix="/api/v1/papers", tags=["papers"])
-app.include_router(chat_router, prefix="/api/v1/chat", tags=["chat"])
-app.include_router(learning_router, prefix="/api/v1/learning", tags=["learning"])
-app.include_router(waiting_list_router, prefix="/api/v1/waiting-list", tags=["waiting-list"])
+app.include_router(papers_router, prefix="/api/v1")
+app.include_router(chat_router, prefix="/api/v1")
+app.include_router(learning_router, prefix="/api/v1")
+app.include_router(waiting_list_router, prefix="/api/v1")
 
 # Custom OpenAPI schema to properly document the API
 def custom_openapi():

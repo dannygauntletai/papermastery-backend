@@ -6,8 +6,14 @@ from app.dependencies import get_supabase_client, rate_limit
 from pydantic import BaseModel, EmailStr
 from typing import Dict, Any
 from fastapi.requests import Request
+from app.dependencies import validate_environment
 
-router = APIRouter()
+router = APIRouter(
+    prefix="/waiting-list",
+    tags=["waiting-list"],
+    dependencies=[Depends(validate_environment)],
+    responses={404: {"description": "Waiting list not found"}},
+)
 logger = get_logger(__name__)
 
 class WaitingListRequest(BaseModel):
