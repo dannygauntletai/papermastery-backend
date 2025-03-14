@@ -414,111 +414,83 @@ async def generate_flashcards(paper_id: str) -> List[CardItem]:
         IMPORTANT: Return ONLY valid JSON. Do not include any special characters or escape sequences that would make the JSON invalid. If you need to include quotes within text, use single quotes inside the JSON strings.
         """
         
-        # Make OpenAI API request with timeout and retry logic
-        max_retries = 3
-        retry_count = 0
-        backoff_factor = 2
-        
-        while retry_count < max_retries:
+        # Set up the HTTP client with explicit timeouts
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=30.0)) as client:
+            api_url = "https://api.openai.com/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            data = {
+                "model": "gpt-3.5-turbo",
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant that generates flashcards for learning."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.7,
+                "max_tokens": 1000
+            }
+            
+            response = await client.post(api_url, json=data, headers=headers)
+            response.raise_for_status()
+            
+            logger.info(f"OpenAI API response status: {response.status_code}")
+            
+            # Extract the content from the response
+            response_data = response.json()
+            content = response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            logger.debug(f"OpenAI API response content length: {len(content)} characters")
+            logger.debug(f"Response content preview: {content[:200]}...")
+            
+            # Process the response content
             try:
-                logger.info(f"Attempt {retry_count + 1} to generate flashcards")
+                # Find JSON array in the response
+                import re
+                json_match = re.search(r'\[\s*\{.*\}\s*\]', content, re.DOTALL)
+                if json_match:
+                    content = json_match.group(0)
                 
-                # Set up the HTTP client with explicit timeouts
-                async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=30.0)) as client:
-                    api_url = "https://api.openai.com/v1/chat/completions"
-                    headers = {
-                        "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-                        "Content-Type": "application/json"
-                    }
-                    data = {
-                        "model": "gpt-3.5-turbo",
-                        "messages": [
-                            {"role": "system", "content": "You are a helpful assistant that generates flashcards for learning."},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "temperature": 0.7,
-                        "max_tokens": 1000
-                    }
-                    
-                    response = await client.post(api_url, json=data, headers=headers)
-                    response.raise_for_status()
-                
-                logger.info(f"OpenAI API response status: {response.status_code}")
-                
-                # Extract the content from the response
-                response_data = response.json()
-                content = response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                logger.debug(f"OpenAI API response content length: {len(content)} characters")
-                logger.debug(f"Response content preview: {content[:200]}...")
-                
-                # Process the response content
+                # Try to parse the JSON
                 try:
-                    # Find JSON array in the response
-                    import re
-                    json_match = re.search(r'\[\s*\{.*\}\s*\]', content, re.DOTALL)
-                    if json_match:
-                        content = json_match.group(0)
-                    
-                    # Try to parse the JSON
+                    flashcards_data = json.loads(content)
+                except json.JSONDecodeError as e:
+                    # If normal parsing fails, try to handle escaped characters
+                    logger.warning(f"Standard JSON parsing failed: {str(e)}")
+                    # Replace invalid escape sequences
+                    sanitized_content = re.sub(r'\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})', r'\\\\', content)
                     try:
-                        flashcards_data = json.loads(content)
-                    except json.JSONDecodeError as e:
-                        # If normal parsing fails, try to handle escaped characters
-                        logger.warning(f"Standard JSON parsing failed: {str(e)}")
-                        # Replace invalid escape sequences
-                        sanitized_content = re.sub(r'\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})', r'\\\\', content)
+                        flashcards_data = json.loads(sanitized_content)
+                        logger.info("Successfully parsed JSON after sanitizing escape characters")
+                    except json.JSONDecodeError:
+                        # If that fails too, try a more aggressive approach - replace all backslashes
+                        logger.warning("Sanitized JSON parsing failed, trying more aggressive approach")
+                        sanitized_content = content.replace('\\', '\\\\')
+                        # But preserve valid escape sequences
+                        for seq in ['\\"', '\\/', '\\b', '\\f', '\\n', '\\r', '\\t']:
+                            sanitized_content = sanitized_content.replace('\\\\' + seq[1], seq)
                         try:
                             flashcards_data = json.loads(sanitized_content)
-                            logger.info("Successfully parsed JSON after sanitizing escape characters")
-                        except json.JSONDecodeError:
-                            # If that fails too, try a more aggressive approach - replace all backslashes
-                            logger.warning("Sanitized JSON parsing failed, trying more aggressive approach")
-                            sanitized_content = content.replace('\\', '\\\\')
-                            # But preserve valid escape sequences
-                            for seq in ['\\"', '\\/', '\\b', '\\f', '\\n', '\\r', '\\t']:
-                                sanitized_content = sanitized_content.replace('\\\\' + seq[1], seq)
-                            try:
-                                flashcards_data = json.loads(sanitized_content)
-                                logger.info("Successfully parsed JSON with aggressive sanitizing")
-                            except json.JSONDecodeError as e:
-                                logger.error(f"All JSON parsing attempts failed: {str(e)}")
-                                retry_count += 1
-                                await asyncio.sleep(backoff_factor ** retry_count)
-                                continue
-                    
-                    # Validate and convert to CardItem objects
-                    flashcards = []
-                    for card_data in flashcards_data:
-                        if "front" in card_data and "back" in card_data:
-                            card = CardItem(
-                                front=card_data["front"],
-                                back=card_data["back"]
-                            )
-                            flashcards.append(card)
-                    
-                    if flashcards:
-                        logger.info(f"Successfully generated {len(flashcards)} flashcards")
-                        return flashcards
-                    
-                    # No valid flashcards found
-                    logger.warning("No valid flashcards found in the response")
-                    retry_count += 1
-                    await asyncio.sleep(backoff_factor ** retry_count)
+                            logger.info("Successfully parsed JSON with aggressive sanitizing")
+                        except json.JSONDecodeError as e:
+                            logger.error(f"All JSON parsing attempts failed: {str(e)}")
                 
-                except json.JSONDecodeError as e:
-                    logger.error(f"Error parsing JSON response: {str(e)}")
-                    retry_count += 1
-                    await asyncio.sleep(backoff_factor ** retry_count)
-            
-            except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
-                logger.error(f"API request failed: {str(e)}")
-                retry_count += 1
-                await asyncio.sleep(backoff_factor ** retry_count)
+                # Validate and convert to CardItem objects
+                flashcards = []
+                for card_data in flashcards_data:
+                    if "front" in card_data and "back" in card_data:
+                        card = CardItem(
+                            front=card_data["front"],
+                            back=card_data["back"]
+                        )
+                        flashcards.append(card)
+                
+                if flashcards:
+                    logger.info(f"Successfully generated {len(flashcards)} flashcards")
+                return flashcards
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Error parsing JSON response: {str(e)}")
         
-        # If we've exhausted all retries, return mock data
-        logger.warning("Exhausted all retries for flashcard generation, using mock data")
-        return _get_mock_flashcards()
-    
     except Exception as e:
         logger.error(f"Error generating flashcards: {str(e)}", exc_info=True)
         return _get_mock_flashcards()
@@ -584,34 +556,26 @@ async def generate_quiz_questions(paper_id: str) -> List[QuestionItem]:
         IMPORTANT: Return ONLY valid JSON. Do not include any special characters or escape sequences that would make the JSON invalid. If you need to include quotes within text, use single quotes inside the JSON strings.
         """
         
-        # Make OpenAI API request with timeout and retry logic
-        max_retries = 3
-        retry_count = 0
-        backoff_factor = 2
-        
-        while retry_count < max_retries:
-            try:
-                logger.info(f"Attempt {retry_count + 1} to generate quiz questions")
+        try:
+            # Set up the HTTP client with explicit timeouts
+            async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=30.0)) as client:
+                api_url = "https://api.openai.com/v1/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                data = {
+                    "model": "gpt-3.5-turbo",
+                    "messages": [
+                        {"role": "system", "content": "You are a helpful assistant that generates quiz questions for learning."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 1500
+                }
                 
-                # Set up the HTTP client with explicit timeouts
-                async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=30.0)) as client:
-                    api_url = "https://api.openai.com/v1/chat/completions"
-                    headers = {
-                        "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-                        "Content-Type": "application/json"
-                    }
-                    data = {
-                        "model": "gpt-3.5-turbo",
-                        "messages": [
-                            {"role": "system", "content": "You are a helpful assistant that generates quiz questions for learning."},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "temperature": 0.7,
-                        "max_tokens": 1500
-                    }
-                    
-                    response = await client.post(api_url, json=data, headers=headers)
-                    response.raise_for_status()
+                response = await client.post(api_url, json=data, headers=headers)
+                response.raise_for_status()
                 
                 logger.info(f"OpenAI API response status: {response.status_code}")
                 
@@ -651,7 +615,8 @@ async def generate_quiz_questions(paper_id: str) -> List[QuestionItem]:
                                 logger.info("Successfully parsed JSON with aggressive sanitizing")
                             except json.JSONDecodeError as e:
                                 logger.error(f"All JSON parsing attempts failed: {str(e)}")
-                                raise
+                                # If all parsing attempts fail, return mock data
+                                return _get_mock_quiz_questions()
                     
                     # Validate and convert to QuestionItem objects
                     questions = []
@@ -678,20 +643,15 @@ async def generate_quiz_questions(paper_id: str) -> List[QuestionItem]:
                         return questions
                     else:
                         logger.warning("No valid quiz questions found in the response")
-                        retry_count += 1
-                        await asyncio.sleep(backoff_factor ** retry_count)
-                except json.JSONDecodeError as e:
+                        return _get_mock_quiz_questions()
+                
+                except Exception as e:
                     logger.error(f"Error parsing JSON response: {str(e)}")
-                    retry_count += 1
-                    await asyncio.sleep(backoff_factor ** retry_count)
-            except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
-                logger.error(f"API request failed: {str(e)}")
-                retry_count += 1
-                await asyncio.sleep(backoff_factor ** retry_count)
+                    return _get_mock_quiz_questions()
         
-        # If we've exhausted all retries, return mock data
-        logger.warning("Exhausted all retries for quiz question generation, using mock data")
-        return _get_mock_quiz_questions()
+        except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
+            logger.error(f"API request failed: {str(e)}")
+            return _get_mock_quiz_questions()
     
     except Exception as e:
         logger.error(f"Error generating quiz questions: {str(e)}", exc_info=True)

@@ -7,23 +7,29 @@ from app.services.learning_service import generate_flashcards, generate_quiz_que
 from app.api.v1.models import CardItem, QuestionItem
 
 @pytest.mark.asyncio
-async def test_paper_exists():
+async def test_paper_exists() -> None:
     """Test that the test paper exists in the database."""
-    paper_id = os.getenv('TEST_PAPER_ID', '0a066c79-1d2e-4d01-8963-f80f16023687')
+    test_paper_id = os.getenv(
+        'TEST_PAPER_ID', 
+        '0a066c79-1d2e-4d01-8963-f80f16023687'
+    )
     
     # Check if paper exists
-    paper: Optional[Dict[str, Any]] = await get_paper_by_id(paper_id)
+    paper: Optional[Dict[str, Any]] = await get_paper_by_id(test_paper_id)
     assert paper is not None
     assert 'title' in paper
     assert 'abstract' in paper
 
 @pytest.mark.asyncio
-async def test_flashcard_generation():
+async def test_flashcard_generation() -> None:
     """Test flashcard generation for the paper."""
-    paper_id = os.getenv('TEST_PAPER_ID', '0a066c79-1d2e-4d01-8963-f80f16023687')
+    test_paper_id = os.getenv(
+        'TEST_PAPER_ID', 
+        '0a066c79-1d2e-4d01-8963-f80f16023687'
+    )
     
     # Generate flashcards
-    flashcards: List[CardItem] = await generate_flashcards(paper_id)
+    flashcards: List[CardItem] = await generate_flashcards(test_paper_id)
     
     # Basic validations
     assert flashcards is not None
@@ -34,12 +40,15 @@ async def test_flashcard_generation():
     assert flashcards[0].back
 
 @pytest.mark.asyncio
-async def test_quiz_generation():
+async def test_quiz_generation() -> None:
     """Test quiz generation for the paper."""
-    paper_id = os.getenv('TEST_PAPER_ID', '0a066c79-1d2e-4d01-8963-f80f16023687')
+    test_paper_id = os.getenv(
+        'TEST_PAPER_ID', 
+        '0a066c79-1d2e-4d01-8963-f80f16023687'
+    )
     
     # Generate quiz questions
-    quiz_questions: List[QuestionItem] = await generate_quiz_questions(paper_id)
+    quiz_questions: List[QuestionItem] = await generate_quiz_questions(test_paper_id)
     
     # Basic validations
     assert quiz_questions is not None

@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, HttpUrl, validator
 import re
-from typing import List, Dict, Optional, Any, Union
+from typing import List, Dict, Optional, Any
 from datetime import datetime
 from uuid import UUID
 from enum import Enum
@@ -235,7 +235,44 @@ class Query(QueryBase):
 
 # API Models
 class LearningItem(BaseModel):
-    """API model for learning items."""
+    """
+    API model for learning items.
+    
+    The metadata field has different structures depending on the item type:
+    
+    - For VIDEO items:
+        metadata = {
+            "videos": [
+                {
+                    "video_id": str,  # YouTube video ID
+                    "title": str,     # Video title
+                    "description": str,  # Video description
+                    "thumbnail": str,  # URL to the video thumbnail
+                    "channel": str,    # Name of the YouTube channel
+                    "duration": str    # Video duration in ISO 8601 format (e.g., PT5M30S)
+                },
+                ...
+            ]
+        }
+    
+    - For QUIZ items:
+        metadata = {
+            "questions": [
+                {
+                    "question": str,   # The question text
+                    "options": List[str],  # List of answer options
+                    "correct_answer": int,  # Index of the correct answer
+                    "explanation": str  # Explanation of the correct answer
+                },
+                ...
+            ]
+        }
+    
+    - For FLASHCARD items:
+        metadata = {
+            "back": str  # Text for the back of the flashcard
+        }
+    """
     id: str
     paper_id: str
     type: LearningItemType

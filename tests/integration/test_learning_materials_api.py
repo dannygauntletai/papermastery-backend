@@ -43,6 +43,11 @@ async def test_learning_materials_endpoint():
         quizzes = [item for item in data if item.get("type") == "quiz"]
         if quizzes:
             verify_quizzes(quizzes)
+            
+        # Verify videos if present
+        videos = [item for item in data if item.get("type") == "video"]
+        if videos:
+            verify_videos(videos)
 
 def count_items_by_type(items: List[Dict[str, Any]]) -> Dict[str, int]:
     """Count items by type."""
@@ -81,6 +86,22 @@ def verify_quizzes(quizzes: List[Dict[str, Any]]) -> None:
                 correct_answer = question.get('correct_answer')
                 assert isinstance(correct_answer, int)
                 assert 0 <= correct_answer < len(options)
+
+def verify_videos(videos: List[Dict[str, Any]]) -> None:
+    """Verify video items have the correct structure."""
+    for video in videos:
+        metadata = video.get('metadata', {})
+        assert 'videos' in metadata
+        
+        video_list = metadata.get('videos', [])
+        assert len(video_list) > 0
+        
+        # Check the structure of the first video
+        first_video = video_list[0]
+        assert 'video_id' in first_video
+        assert 'title' in first_video
+        assert 'thumbnail' in first_video
+        assert 'channel' in first_video
 
 if __name__ == "__main__":
     asyncio.run(pytest.main(["-xvs", __file__])) 
