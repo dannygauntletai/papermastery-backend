@@ -3,16 +3,18 @@ from typing import List, Optional, Dict, Any
 from uuid import UUID
 import uuid
 
-from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary
+from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary, SourceType
 from app.core.logger import get_logger
 from app.services.arxiv_service import (
     fetch_paper_metadata,
-    download_and_process_paper,
     get_related_papers
 )
+from app.services.pdf_service import download_and_process_paper
+from app.services.url_service import detect_url_type, fetch_metadata_from_url, extract_arxiv_id_from_url
 from app.database.supabase_client import (
     get_paper_by_arxiv_id,
     get_paper_by_id,
+    get_paper_by_source,
     insert_paper,
     update_paper,
     list_papers as db_list_papers,
@@ -25,6 +27,7 @@ from app.services.pinecone_service import store_chunks
 from app.services.summarization_service import generate_summaries
 from app.services.learning_service import generate_learning_path
 from app.dependencies import validate_environment, get_current_user
+from app.core.exceptions import InvalidPDFUrlError
 
 logger = get_logger(__name__)
 
@@ -45,13 +48,13 @@ async def submit_paper(
     # kwargs: Optional[str] = Query(None, description="Not required")
 ):
     """
-    Submit an arXiv paper for processing.
+    Submit a paper for processing.
     
     The submission is accepted immediately, and processing happens in the background.
     Check the status of the paper by retrieving it with GET /papers/{id}.
     
     Args:
-        paper_submission: The submission request containing the arXiv link
+        paper_submission: The submission request containing the paper URL
         background_tasks: FastAPI background tasks
         user_id: The ID of the authenticated user
         # args: Optional arguments (system use only)
@@ -60,18 +63,38 @@ async def submit_paper(
     Returns:
         The paper data with processing status
     """
-    logger.info(f"Received paper submission from user {user_id}: {paper_submission.arxiv_link}")
+    source_url = str(paper_submission.source_url)
+    logger.info(f"Received paper submission from user {user_id}: {source_url}")
     
-    # Extract arXiv ID from the URL
-    url_str = str(paper_submission.arxiv_link)
-    arxiv_id = url_str.split("/")[-1]
-    if "pdf" in arxiv_id:
-        arxiv_id = arxiv_id.replace(".pdf", "")
+    # Detect URL type
+    try:
+        source_type = paper_submission.source_type or await detect_url_type(source_url)
+    except InvalidPDFUrlError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"URL does not point to a valid PDF: {source_url}"
+        )
     
     # Check if paper already exists
-    existing_paper = await get_paper_by_arxiv_id(arxiv_id)
+    existing_paper = None
+    
+    if source_type == SourceType.ARXIV:
+        # Extract arXiv ID from the URL
+        arxiv_id = await extract_arxiv_id_from_url(source_url)
+        if not arxiv_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid arXiv URL: {source_url}"
+            )
+        
+        # Check if paper already exists by arXiv ID
+        existing_paper = await get_paper_by_arxiv_id(arxiv_id)
+    else:
+        # Check if paper already exists by source URL and type
+        existing_paper = await get_paper_by_source(source_url, source_type)
+    
     if existing_paper:
-        logger.info(f"Paper with arXiv ID {arxiv_id} already exists, adding to user's papers")
+        logger.info(f"Paper with source URL {source_url} already exists, adding to user's papers")
         await add_paper_to_user(user_id, existing_paper["id"])
         
         # Check if a conversation exists for this paper, create one if not
@@ -89,12 +112,18 @@ async def submit_paper(
         
         return existing_paper
     
-    # Fetch paper metadata from arXiv
-    paper_metadata = await fetch_paper_metadata(arxiv_id)
+    # Fetch paper metadata based on source type
+    try:
+        paper_metadata = await fetch_metadata_from_url(source_url, source_type)
+    except Exception as e:
+        logger.error(f"Error fetching metadata for URL {source_url}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching paper metadata: {str(e)}"
+        )
     
     # Create initial paper entry in database
     paper_data = {
-        "arxiv_id": arxiv_id,
         "title": paper_metadata.title,
         "authors": [{"name": author.name, "affiliations": author.affiliations} for author in paper_metadata.authors],
         "abstract": paper_metadata.abstract,
@@ -102,8 +131,14 @@ async def submit_paper(
         "summaries": None,
         "embedding_id": None,
         "related_papers": None,
+        "source_type": source_type,
+        "source_url": source_url,
         "tags": {"status": "pending"}  # Use tags field to track status instead of processing_status
     }
+    
+    # Add arXiv ID if available
+    if hasattr(paper_metadata, 'arxiv_id') and paper_metadata.arxiv_id:
+        paper_data["arxiv_id"] = paper_metadata.arxiv_id
     
     new_paper = await insert_paper(paper_data)
     
@@ -126,11 +161,12 @@ async def submit_paper(
     # Process paper in background
     background_tasks.add_task(
         process_paper_in_background,
-        arxiv_id=arxiv_id,
+        source_url=source_url,
+        source_type=source_type,
         paper_id=UUID(new_paper["id"])
     )
     
-    logger.info(f"Paper submission accepted, processing in background: {arxiv_id}")
+    logger.info(f"Paper submission accepted, processing in background: {source_url}")
     return new_paper
 
 
@@ -232,48 +268,57 @@ async def get_paper_summaries(
 @router.get("/{paper_id}/related", response_model=List[Dict[str, Any]])
 async def get_related_papers_for_paper(
     paper_id: UUID,
-    # args: Optional[str] = Query(None, description="Not required"),
-    # kwargs: Optional[str] = Query(None, description="Not required")
+    user_id: str = Depends(get_current_user)
 ):
     """
-    Get papers related to the specified paper.
+    Get related papers for a specific paper.
     
     Args:
-        paper_id: The UUID of the paper
-        # args: Optional arguments (system use only)
-        # kwargs: Optional keyword arguments (system use only)
+        paper_id: The ID of the paper to get related papers for
+        user_id: The ID of the authenticated user
         
     Returns:
-        List of related papers with similarity scores
-        
-    Raises:
-        HTTPException: If paper not found
+        List of related papers
     """
-    paper = await get_paper_by_id(paper_id)
-    
+    # Get the paper
+    paper = await get_paper_by_id(str(paper_id))
     if not paper:
-        logger.warning(f"Paper with ID {paper_id} not found")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Paper with ID {paper_id} not found"
         )
     
-    # Check if related papers are already stored in the database
+    # Check if related papers are already in the database
     if paper.get("related_papers"):
-        logger.info(f"Retrieved related papers for paper with ID: {paper_id} from database")
+        logger.info(f"Using cached related papers for paper with ID {paper_id}")
         return paper.get("related_papers")
     
-    # If not in database, fetch them from OpenAlex API
-    arxiv_id = paper.get("arxiv_id")
-    if not arxiv_id:
-        logger.warning(f"Paper with ID {paper_id} has no arXiv ID")
+    # If not in database, fetch them based on source type
+    if paper.get("source_type") == SourceType.ARXIV:
+        # For arXiv papers, use the arXiv ID to fetch related papers
+        arxiv_id = paper.get("arxiv_id")
+        if not arxiv_id:
+            # Try to extract arXiv ID from source_url
+            source_url = paper.get("source_url")
+            if source_url:
+                arxiv_id = await extract_arxiv_id_from_url(source_url)
+            
+            if not arxiv_id:
+                logger.warning(f"Paper with ID {paper_id} has no arXiv ID")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Paper has no arXiv ID and cannot fetch related papers"
+                )
+        
+        # Fetch related papers
+        related_papers = await get_related_papers(arxiv_id)
+    else:
+        # For non-arXiv papers, we currently don't support finding related papers
+        logger.warning(f"Related papers not supported for source type {paper.get('source_type')}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Paper has no arXiv ID"
+            detail=f"Related papers not supported for source type {paper.get('source_type')}"
         )
-    
-    # Fetch related papers
-    related_papers = await get_related_papers(arxiv_id)
     
     if not related_papers:
         logger.warning(f"No related papers found for paper with ID {paper_id}")
@@ -284,7 +329,7 @@ async def get_related_papers_for_paper(
     
     # Update the paper in the database with the related papers
     await update_paper(
-        paper_id,
+        str(paper_id),
         {"related_papers": related_papers}
     )
     
@@ -334,119 +379,76 @@ async def get_paper_conversations(
 
 
 # Background processing function
-async def process_paper_in_background(arxiv_id: str, paper_id: UUID):
+async def process_paper_in_background(source_url: str, source_type: str, paper_id: UUID) -> None:
     """
     Process a paper in the background.
     
     This function:
-    1. Downloads the PDF from arXiv
-    2. Extracts text from the PDF
-    3. Breaks it into logical chunks
-    4. Generates embeddings and stores them in Pinecone
-    5. Finds related papers
-    6. Generates summaries
-    7. Generates learning materials (videos, flashcards, quizzes)
-    8. Updates the paper in the database
+    1. Downloads and processes the paper
+    2. Stores the chunks in Pinecone
+    3. Generates summaries
+    4. Finds related papers
+    5. Updates the paper in the database
     
     Args:
-        arxiv_id: The arXiv ID of the paper
-        paper_id: The UUID of the paper in our database
+        source_url: The URL to the paper
+        source_type: The type of source ("arxiv" or "pdf")
+        paper_id: The UUID of the paper in the database
     """
-    embedding_id = None
-    related_papers = None
-    error_message = None
-    
     try:
-        logger.info(f"Processing paper in background: {arxiv_id}")
+        logger.info(f"Starting background processing for paper {paper_id} from {source_url}")
         
         # Update status to processing
         await update_paper(paper_id, {"tags": {"status": "processing"}})
         
-        # Download and process PDF - pass the paper_id for LangChain processing
-        full_text, text_chunks = await download_and_process_paper(arxiv_id, paper_id)
+        # Download and process paper
+        full_text, chunks = await download_and_process_paper(source_url, paper_id, source_type)
         
-        # Chunk the text - now processes with LangChain if available
-        chunks = await chunk_text(full_text, paper_id, text_chunks)
-        
-        # Try to store chunks in Pinecone, but continue if it fails
-        try:
-            embedding_id = await store_chunks(paper_id, chunks)
-            logger.info(f"Successfully stored chunks in Pinecone for paper ID: {paper_id}")
-        except Exception as pinecone_error:
-            logger.error(f"Error storing chunks in Pinecone for paper ID {paper_id}: {str(pinecone_error)}")
-            error_message = f"Pinecone error: {str(pinecone_error)[:200]}"
-            # Continue processing despite Pinecone error
-        
-        # Try to get related papers, but continue if it fails
-        try:
-            related_papers = await get_related_papers(arxiv_id)
-            logger.info(f"Successfully fetched related papers for paper ID: {paper_id}")
-        except Exception as related_papers_error:
-            logger.error(f"Error fetching related papers for paper ID {paper_id}: {str(related_papers_error)}")
-            error_message = error_message or f"Related papers error: {str(related_papers_error)[:200]}"
-            # Continue processing despite related papers error
+        # Store chunks in Pinecone
+        embedding_id = await store_chunks(chunks, str(paper_id))
         
         # Generate summaries
-        paper = await get_paper_by_id(paper_id)
-        summaries = await generate_summaries(
-            paper_id=paper_id,
-            abstract=paper.get("abstract", ""),
-            full_text=full_text,
-            chunks=chunks
-        )
+        summaries = await generate_summaries(full_text)
         
-        # Generate learning materials (videos, flashcards, quizzes)
-        try:
-            learning_path = await generate_learning_path(str(paper_id))
-            logger.info(f"Successfully generated learning materials for paper ID: {paper_id}")
-            has_learning_materials = True
-            learning_materials_count = len(learning_path.items) if learning_path and learning_path.items else 0
-        except Exception as learning_error:
-            logger.error(f"Error generating learning materials for paper ID {paper_id}: {str(learning_error)}")
-            error_message = error_message or f"Learning materials error: {str(learning_error)[:200]}"
-            has_learning_materials = False
-            learning_materials_count = 0
-            # Continue processing despite learning materials generation error
+        # Find related papers
+        related_papers = []
+        if source_type == SourceType.ARXIV:
+            try:
+                arxiv_id = None
+                if hasattr(paper_metadata, 'arxiv_id') and paper_metadata.arxiv_id:
+                    arxiv_id = paper_metadata.arxiv_id
+                else:
+                    arxiv_id = await extract_arxiv_id_from_url(source_url)
+                
+                if arxiv_id:
+                    related_papers = await get_related_papers(arxiv_id)
+            except Exception as e:
+                logger.error(f"Error getting related papers for {source_url}: {str(e)}")
         
-        # Update the paper in the database
+        # Update paper with processed data
         update_data = {
-            "full_text": full_text[:1000],  # Store first 1000 chars as preview
+            "full_text": full_text,
+            "embedding_id": embedding_id,
             "summaries": {
                 "beginner": summaries.beginner,
                 "intermediate": summaries.intermediate,
                 "advanced": summaries.advanced
             },
-            "chunk_count": len(chunks),
-            "tags": {
-                "status": "completed",
-                "has_learning_materials": has_learning_materials,
-                "learning_materials_count": learning_materials_count
-            }
+            "related_papers": related_papers,
+            "tags": {"status": "completed"}
         }
         
-        # Add embedding_id and related_papers if they were successfully retrieved
-        if embedding_id:
-            update_data["embedding_id"] = embedding_id
-        if related_papers:
-            update_data["related_papers"] = related_papers
-        if error_message:
-            update_data["partial_error"] = error_message
-            
         await update_paper(paper_id, update_data)
         
-        logger.info(f"Background processing completed for paper: {arxiv_id}")
+        logger.info(f"Background processing completed for paper {paper_id}")
+        
+        # Generate learning path in the background (don't wait for it)
+        try:
+            await generate_learning_path(paper_id)
+        except Exception as e:
+            logger.error(f"Error generating learning path for paper {paper_id}: {str(e)}")
         
     except Exception as e:
-        logger.error(f"Error processing paper {arxiv_id} in background: {str(e)}")
-        
-        # Update paper status to error
-        try:
-            await update_paper(
-                paper_id,
-                {
-                    "tags": {"status": "error"},
-                    "error_message": str(e)[:500]  # Limit error message length
-                }
-            )
-        except Exception as update_error:
-            logger.error(f"Error updating paper status: {str(update_error)}") 
+        logger.error(f"Error processing paper {paper_id} in background: {str(e)}")
+        # Update status to error
+        await update_paper(paper_id, {"tags": {"status": "error", "error_message": str(e)}}) 

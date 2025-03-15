@@ -5,7 +5,7 @@ from datetime import datetime
 import uuid
 
 from app.main import app
-from app.api.v1.models import PaperMetadata, Author
+from app.api.v1.models import PaperMetadata, Author, SourceType
 from app.dependencies import validate_environment, get_current_user
 
 # Create a test client
@@ -45,7 +45,9 @@ def mock_arxiv_service():
             abstract="This is a test abstract for the paper.",
             publication_date=datetime.now(),
             categories=["cs.AI"],
-            doi=None
+            doi=None,
+            source_type=SourceType.ARXIV,
+            source_url="https://arxiv.org/abs/2101.12345"
         )
         
         mock_fetch.return_value = mock_metadata
@@ -73,7 +75,7 @@ def mock_arxiv_service():
                                 "advanced": "Advanced summary"
                             }
                             
-                            yield
+                            yield mock_fetch
 
 @pytest.fixture
 def mock_supabase_client():
@@ -81,37 +83,46 @@ def mock_supabase_client():
     with patch("app.api.v1.endpoints.papers.get_paper_by_arxiv_id") as mock_get_by_arxiv:
         mock_get_by_arxiv.return_value = None
         
-        with patch("app.api.v1.endpoints.papers.insert_paper") as mock_insert:
-            paper_id = str(uuid.uuid4())
+        with patch("app.api.v1.endpoints.papers.get_paper_by_source") as mock_get_by_source:
+            mock_get_by_source.return_value = None
             
-            mock_paper = {
-                "id": paper_id,
-                "arxiv_id": "2101.12345",
-                "title": "Test Paper Title",
-                "authors": [{"name": "Test Author", "affiliations": ["Test University"]}],
-                "abstract": "This is a test abstract for the paper.",
-                "publication_date": datetime.now().isoformat(),
-                "summaries": None,
-                "related_papers": [],
-                "tags": {"status": "pending", "category": "cs.AI"}
-            }
-            
-            mock_insert.return_value = mock_paper
-            
-            with patch("app.api.v1.endpoints.papers.get_paper_by_id") as mock_get_by_id:
-                mock_get_by_id.return_value = mock_paper
+            with patch("app.api.v1.endpoints.papers.insert_paper") as mock_insert:
+                paper_id = str(uuid.uuid4())
                 
-                with patch("app.api.v1.endpoints.papers.update_paper") as mock_update:
-                    mock_update.return_value = mock_paper
+                mock_paper = {
+                    "id": paper_id,
+                    "arxiv_id": "2101.12345",
+                    "source_url": "https://arxiv.org/abs/2101.12345",
+                    "source_type": "arxiv",
+                    "title": "Test Paper Title",
+                    "authors": [{"name": "Test Author", "affiliations": ["Test University"]}],
+                    "abstract": "This is a test abstract for the paper.",
+                    "publication_date": datetime.now().isoformat(),
+                    "summaries": None,
+                    "related_papers": [],
+                    "tags": {"status": "pending", "category": "cs.AI"}
+                }
+                
+                mock_insert.return_value = mock_paper
+                
+                with patch("app.api.v1.endpoints.papers.get_paper_by_id") as mock_get_by_id:
+                    mock_get_by_id.return_value = mock_paper
                     
-                    with patch("app.api.v1.endpoints.papers.db_list_papers") as mock_list:
-                        mock_list.return_value = [mock_paper]
+                    with patch("app.api.v1.endpoints.papers.update_paper") as mock_update:
+                        mock_update.return_value = mock_paper
                         
-                        # Mock add_paper_to_user to avoid foreign key constraint error
-                        with patch("app.api.v1.endpoints.papers.add_paper_to_user") as mock_add_to_user:
-                            mock_add_to_user.return_value = None
+                        with patch("app.api.v1.endpoints.papers.db_list_papers") as mock_list:
+                            mock_list.return_value = [mock_paper]
                             
-                            yield paper_id
+                            # Mock add_paper_to_user to avoid foreign key constraint error
+                            with patch("app.api.v1.endpoints.papers.add_paper_to_user") as mock_add_to_user:
+                                mock_add_to_user.return_value = None
+                                
+                                # Mock create_conversation to avoid foreign key constraint error
+                                with patch("app.api.v1.endpoints.papers.create_conversation") as mock_create_conversation:
+                                    mock_create_conversation.return_value = None
+                                    
+                                    yield paper_id
 
 @pytest.fixture
 def mock_related_papers():
@@ -123,12 +134,16 @@ def mock_related_papers():
                 "title": "Related Paper 1",
                 "authors": [{"name": "Related Author 1", "affiliations": ["University 1"]}],
                 "arxiv_id": "2101.54321",
+                "source_url": "https://arxiv.org/abs/2101.54321",
+                "source_type": "arxiv",
                 "abstract": "This is a related paper abstract."
             },
             {
                 "title": "Related Paper 2",
                 "authors": [{"name": "Related Author 2", "affiliations": ["University 2"]}],
                 "arxiv_id": "2102.12345",
+                "source_url": "https://arxiv.org/abs/2102.12345",
+                "source_type": "arxiv",
                 "abstract": "This is another related paper abstract."
             }
         ]
@@ -138,7 +153,7 @@ def test_submit_paper(mock_arxiv_service, mock_supabase_client):
     """Test submitting a paper."""
     response = client.post(
         "/api/v1/papers/submit",
-        json={"arxiv_link": "https://arxiv.org/abs/2101.12345"}
+        json={"source_url": "https://arxiv.org/abs/2101.12345", "source_type": "arxiv"}
     )
     
     print(f"Response status: {response.status_code}")
@@ -147,6 +162,8 @@ def test_submit_paper(mock_arxiv_service, mock_supabase_client):
     assert response.status_code == 202
     assert response.json()["arxiv_id"] == "2101.12345"
     assert response.json()["title"] == "Test Paper Title"
+    assert response.json()["source_url"] == "https://arxiv.org/abs/2101.12345"
+    assert response.json()["source_type"] == "arxiv"
 
 def test_get_paper(mock_supabase_client):
     """Test getting a paper by ID."""
@@ -172,6 +189,8 @@ def test_get_related_papers(mock_dependencies, mock_related_papers):
         mock_get_by_id.return_value = {
             "id": paper_id,
             "arxiv_id": "2101.12345",
+            "source_url": "https://arxiv.org/abs/2101.12345",
+            "source_type": "arxiv",
             "title": "Test Paper",
             "authors": [{"name": "Test Author", "affiliations": ["Test University"]}],
             "abstract": "Test abstract",
@@ -209,12 +228,16 @@ def test_get_related_papers_from_database(mock_dependencies):
             "title": "Related Paper 1",
             "authors": [{"name": "Related Author 1", "affiliations": ["University 1"]}],
             "arxiv_id": "2101.54321",
+            "source_url": "https://arxiv.org/abs/2101.54321",
+            "source_type": "arxiv",
             "abstract": "This is a related paper abstract."
         },
         {
             "title": "Related Paper 2",
             "authors": [{"name": "Related Author 2", "affiliations": ["University 2"]}],
             "arxiv_id": "2102.12345",
+            "source_url": "https://arxiv.org/abs/2102.12345",
+            "source_type": "arxiv",
             "abstract": "This is another related paper abstract."
         }
     ]
@@ -224,6 +247,8 @@ def test_get_related_papers_from_database(mock_dependencies):
         mock_get_by_id.return_value = {
             "id": paper_id,
             "arxiv_id": "2101.12345",
+            "source_url": "https://arxiv.org/abs/2101.12345",
+            "source_type": "arxiv",
             "title": "Test Paper",
             "authors": [{"name": "Test Author", "affiliations": ["Test University"]}],
             "abstract": "Test abstract",

@@ -9,7 +9,7 @@ import httpx
 import os
 from uuid import UUID
 
-from app.api.v1.models import PaperMetadata, Author
+from app.api.v1.models import PaperMetadata, Author, SourceType
 from app.core.logger import get_logger
 from app.core.config import ARXIV_API_BASE_URL, OPENALEX_API_BASE_URL
 from app.core.exceptions import ArXivAPIError, InvalidArXivLinkError
@@ -67,6 +67,9 @@ async def fetch_paper_metadata(arxiv_id: str) -> PaperMetadata:
         except (ValueError, TypeError):
             publication_date = datetime.now()
         
+        # Construct source URL
+        source_url = f"https://arxiv.org/abs/{arxiv_id}"
+        
         # Create metadata object
         metadata = PaperMetadata(
             arxiv_id=arxiv_id,
@@ -75,7 +78,9 @@ async def fetch_paper_metadata(arxiv_id: str) -> PaperMetadata:
             abstract=entry.get('summary', '').replace('\n', ' '),
             publication_date=publication_date,
             categories=[tag.get('term', '') for tag in entry.get('tags', [])],
-            doi=entry.get('arxiv_doi', None)
+            doi=entry.get('arxiv_doi', None),
+            source_type=SourceType.ARXIV,
+            source_url=source_url
         )
         
         logger.info(f"Successfully fetched metadata for arXiv ID: {arxiv_id}")

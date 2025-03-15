@@ -4,6 +4,7 @@ from app.core.logger import get_logger
 from app.core.exceptions import SupabaseError
 from uuid import UUID
 from typing import Dict, Any, Optional, List
+from app.api.v1.models import SourceType
 
 logger = get_logger(__name__)
 
@@ -64,6 +65,32 @@ async def get_paper_by_arxiv_id(arxiv_id: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Error retrieving paper with arXiv ID {arxiv_id}: {str(e)}")
         raise SupabaseError(f"Error retrieving paper with arXiv ID {arxiv_id}: {str(e)}")
+
+
+async def get_paper_by_source(source_url: str, source_type: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve a paper from the Supabase database by its source URL and type.
+    
+    Args:
+        source_url: The source URL of the paper
+        source_type: The source type ("arxiv" or "pdf")
+        
+    Returns:
+        The paper data as a dictionary, or None if not found
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the paper
+    """
+    try:
+        response = supabase.table("papers").select("*").eq("source_url", source_url).eq("source_type", source_type).execute()
+        
+        if len(response.data) == 0:
+            return None
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error retrieving paper with source URL {source_url}: {str(e)}")
+        raise SupabaseError(f"Error retrieving paper with source URL {source_url}: {str(e)}")
         
 
 async def insert_paper(paper_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -80,6 +107,14 @@ async def insert_paper(paper_data: Dict[str, Any]) -> Dict[str, Any]:
         SupabaseError: If there's an error inserting the paper
     """
     try:
+        # Ensure source_type is set if not provided
+        if "source_type" not in paper_data:
+            paper_data["source_type"] = SourceType.ARXIV
+            
+        # For arXiv papers, ensure source_url is set if not provided
+        if paper_data["source_type"] == SourceType.ARXIV and "source_url" not in paper_data and "arxiv_id" in paper_data:
+            paper_data["source_url"] = f"https://arxiv.org/abs/{paper_data['arxiv_id']}"
+            
         response = supabase.table("papers").insert(paper_data).execute()
         
         if len(response.data) == 0:

@@ -5,18 +5,23 @@ from datetime import datetime
 from uuid import UUID
 from enum import Enum
 
+class SourceType(str, Enum):
+    """Enum for paper source types."""
+    ARXIV = "arxiv"
+    PDF = "pdf"
+
 class PaperSubmission(BaseModel):
-    """Model for submitting an arXiv paper."""
-    arxiv_link: HttpUrl = Field(..., description="URL to the arXiv paper")
+    """Model for submitting a paper."""
+    source_url: HttpUrl = Field(..., description="URL to the paper (arXiv or PDF)")
+    source_type: Optional[SourceType] = None
     
-    @validator('arxiv_link')
+    @validator('source_url')
     @classmethod
-    def validate_arxiv_link(cls, v):
-        """Validate that the URL is an arXiv link."""
+    def validate_source_url(cls, v):
+        """Validate that the URL is a valid URL."""
         # Convert to string for regex matching
         v_str = str(v)
-        if not re.match(r'https?://arxiv.org/(?:abs|pdf)/\d+\.\d+(?:v\d+)?', v_str):
-            raise ValueError("URL must be a valid arXiv link (e.g., https://arxiv.org/abs/1912.10389)")
+        # Basic URL validation is handled by HttpUrl type
         return v
 
 class Author(BaseModel):
@@ -26,13 +31,15 @@ class Author(BaseModel):
 
 class PaperMetadata(BaseModel):
     """Model for paper metadata."""
-    arxiv_id: str
+    arxiv_id: Optional[str] = None
     title: str
     authors: List[Author]
     abstract: str 
     publication_date: datetime
     categories: Optional[List[str]] = None
     doi: Optional[str] = None
+    source_type: SourceType = SourceType.ARXIV
+    source_url: str
     
 class PaperSummary(BaseModel):
     """Model for paper summaries."""
@@ -42,13 +49,15 @@ class PaperSummary(BaseModel):
     
 class PaperBase(BaseModel):
     """Base model for paper attributes."""
-    arxiv_id: str
+    arxiv_id: Optional[str] = None
     title: str
     authors: List[Author]
     abstract: str
     publication_date: datetime
     full_text: Optional[str] = None
     embedding_id: Optional[str] = None
+    source_type: SourceType = SourceType.ARXIV
+    source_url: str
 
 class PaperCreate(PaperBase):
     """Model for creating a paper entry."""
