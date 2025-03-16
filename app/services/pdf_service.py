@@ -12,7 +12,6 @@ from app.core.exceptions import PDFDownloadError, InvalidPDFUrlError
 from app.database.supabase_client import get_paper_by_id
 from app.api.v1.models import SourceType
 from app.utils.pdf_utils import extract_text_from_pdf, clean_pdf_text
-from app.services.pinecone_service import process_pdf_with_langchain
 
 logger = get_logger(__name__)
 
@@ -192,15 +191,14 @@ async def get_paper_pdf(paper_id: UUID) -> Optional[str]:
         logger.error(f"Error getting PDF for paper with ID {paper_id}: {str(e)}")
         raise PDFDownloadError(f"Error getting PDF for paper with ID {paper_id}: {str(e)}")
 
-async def download_and_process_paper(source_url: str, paper_id: Optional[UUID] = None, source_type: str = SourceType.ARXIV) -> Tuple[str, List[Dict[str, Any]]]:
+async def download_and_process_paper(source_url: str, paper_id: Optional[UUID] = None, source_type: str = SourceType.ARXIV) -> str:
     """
-    Download and process a paper from any source.
+    Download and extract text from a paper.
     
     This function:
     1. Downloads the PDF from the source URL
-    2. Extracts text from the PDF
-    3. Processes it using LangChain (if available) or fallback to basic processing
-    4. Breaks it into logical chunks with metadata
+    2. Extracts text from the PDF using PyPDF2
+    3. Cleans the extracted text
     
     Args:
         source_url: The URL to the paper
@@ -208,7 +206,7 @@ async def download_and_process_paper(source_url: str, paper_id: Optional[UUID] =
         source_type: The type of source ("arxiv", "pdf", or "file")
         
     Returns:
-        Tuple containing full text and a list of text chunks with metadata
+        The full text of the paper
         
     Raises:
         PDFDownloadError: If there's an error downloading or processing the PDF
@@ -219,40 +217,15 @@ async def download_and_process_paper(source_url: str, paper_id: Optional[UUID] =
         # Download PDF
         pdf_path, is_new = await download_pdf(source_url)
         
-        # Always try processing with LangChain first
-        try:
-            logger.info(f"Processing PDF with LangChain for paper ID: {paper_id}")
-            formatted_chunks, langchain_chunks = await process_pdf_with_langchain(pdf_path, paper_id or UUID('00000000-0000-0000-0000-000000000000'))
-            
-            # Combine all text for full text
-            full_text = "\n\n".join([chunk.get("text", "") for chunk in formatted_chunks])
-            
-            logger.info(f"Successfully processed PDF with LangChain")
-            return full_text, formatted_chunks
-                
-        except Exception as langchain_error:
-            logger.warning(f"LangChain processing failed, falling back to basic processing: {str(langchain_error)}")
-            # Continue with basic processing if LangChain fails
-        
-        # Fallback to basic processing
-        # Extract text from PDF
+        # Extract text from PDF using PyPDF2
         text = await extract_text_from_pdf(pdf_path)
         
         # Clean text
         text = await clean_pdf_text(text)
         
-        # Break into chunks using chunk_service
-        from app.services.chunk_service import chunk_text
-        chunks_with_metadata = await chunk_text(
-            text=text,
-            paper_id=paper_id or UUID('00000000-0000-0000-0000-000000000000'),
-            max_chunk_size=1000,
-            overlap=100
-        )
+        logger.info(f"Successfully extracted text from PDF")
         
-        logger.info(f"Successfully processed PDF using basic processing")
-        
-        return text, chunks_with_metadata
+        return text
         
     except Exception as e:
         logger.error(f"Error processing PDF for source {source_url}: {str(e)}")

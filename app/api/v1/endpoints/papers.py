@@ -24,14 +24,9 @@ from app.database.supabase_client import (
     create_conversation,
     get_user_paper_conversations
 )
-from app.services.chunk_service import chunk_text
-from app.services.pinecone_service import store_chunks
-from app.services.summarization_service import generate_summaries
-from app.services.learning_service import generate_learning_path
-from app.dependencies import validate_environment, get_current_user
-from app.core.exceptions import InvalidPDFUrlError, PDFDownloadError
 from app.services.storage_service import upload_file_to_storage, get_file_url
-from app.core.exceptions import StorageError
+from app.dependencies import validate_environment, get_current_user
+from app.core.exceptions import InvalidPDFUrlError, PDFDownloadError, StorageError
 
 logger = get_logger(__name__)
 
@@ -512,11 +507,9 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
     Process a paper in the background.
     
     This function:
-    1. Downloads and processes the paper
-    2. Stores the chunks in Pinecone
-    3. Generates summaries
-    4. Finds related papers
-    5. Updates the paper in the database
+    1. Downloads and extracts text from the paper
+    2. Finds related papers (for arXiv papers)
+    3. Updates the paper in the database
     
     Args:
         source_url: The URL to the paper (Supabase storage URL for uploaded files)
@@ -540,15 +533,9 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
                 original_arxiv_url = f"https://arxiv.org/abs/{arxiv_id}"
                 logger.info(f"Using original arXiv URL for metadata: {original_arxiv_url}")
         
-        # Download and process paper
+        # Download and extract text from paper
         # Use the storage URL for downloading the PDF
-        full_text, chunks = await download_and_process_paper(source_url, paper_id, source_type)
-        
-        # Store chunks in Pinecone
-        embedding_id = await store_chunks(chunks, str(paper_id))
-        
-        # Generate summaries
-        summaries = await generate_summaries(full_text)
+        full_text = await download_and_process_paper(source_url, paper_id, source_type)
         
         # Find related papers
         related_papers = []
@@ -572,12 +559,6 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
         # Update paper with processed data
         update_data = {
             "full_text": full_text,
-            "embedding_id": embedding_id,
-            "summaries": {
-                "beginner": summaries.beginner,
-                "intermediate": summaries.intermediate,
-                "advanced": summaries.advanced
-            },
             "related_papers": related_papers,
             "tags": {"status": "completed"}
         }
@@ -585,12 +566,6 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
         await update_paper(paper_id, update_data)
         
         logger.info(f"Background processing completed for paper {paper_id}")
-        
-        # Generate learning path in the background (don't wait for it)
-        try:
-            await generate_learning_path(paper_id)
-        except Exception as e:
-            logger.error(f"Error generating learning path for paper {paper_id}: {str(e)}")
         
     except Exception as e:
         logger.error(f"Error processing paper {paper_id} in background: {str(e)}")

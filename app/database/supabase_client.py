@@ -380,25 +380,7 @@ async def get_paper_full_text(paper_id: UUID) -> Optional[str]:
         # Get the full text from the paper
         full_text = paper.get("full_text", "")
         
-        # If the full text is too short (likely just a preview), try to reconstruct from chunks
-        if len(full_text) < 1500:  # Assuming 1000 chars is the preview + some buffer
-            logger.info(f"Full text for paper {paper_id} is too short, attempting to reconstruct from chunks")
-            
-            try:
-                # Query the Pinecone index to get all chunks for this paper
-                from app.services.pinecone_service import get_all_paper_chunks
-                
-                chunks = await get_all_paper_chunks(paper_id)
-                if chunks:
-                    # Reconstruct the full text from chunks
-                    reconstructed_text = "\n\n".join([chunk.get("text", "") for chunk in chunks])
-                    logger.info(f"Successfully reconstructed full text for paper {paper_id} from {len(chunks)} chunks")
-                    return reconstructed_text
-            except Exception as e:
-                logger.warning(f"Error reconstructing full text from chunks: {str(e)}")
-                # Continue with the preview if reconstruction fails
-        
-        logger.info(f"Retrieved full text for paper {paper_id} ({len(full_text)} characters)")
+        # Return the full text directly
         return full_text
     except Exception as e:
         logger.error(f"Error retrieving full text for paper with ID {paper_id}: {str(e)}")

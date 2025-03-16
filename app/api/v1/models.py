@@ -83,7 +83,6 @@ class PaperBase(BaseModel):
     abstract: str
     publication_date: datetime
     full_text: Optional[str] = None
-    embedding_id: Optional[str] = None
     source_type: SourceType = SourceType.ARXIV
     source_url: str
 
