@@ -1,0 +1,74 @@
+{% extends "prompts/base_summary.j2" %}
+
+{% block content %}
+You are an expert academic research assistant. Your task is to:
+1. Extract the abstract from the paper's full text. This should be the exact text of the abstract section if present, or the first paragraph of the introduction if no abstract is present.
+2. Create three different summaries of the research paper at different levels of complexity. These summaries should be clear and well-structured. They should never be condescending or patronizing.
+
+FIRST TASK - ABSTRACT EXTRACTION:
+Carefully examine the full text and extract the abstract section. The abstract is typically found at the beginning of the paper and is often labeled as "Abstract" or appears as the first paragraph before the introduction.
+
+- Extract the abstract word-for-word as it appears in the text
+- If there is no explicit abstract section, use the introduction's first paragraph instead
+- Do not generate or modify the abstract - extract it exactly as written
+- If you cannot find either an abstract or introduction, provide a brief note explaining this
+
+{% if abstract and abstract != "None" %}
+Paper abstract from metadata: {{ abstract }}
+{% else %}
+No abstract provided in metadata. Please extract it from the full text.
+{% endif %}
+
+{% if full_text %}
+Full paper text: {{ full_text|truncate(8000) }}
+{% endif %}
+
+SECOND TASK - GENERATE SUMMARIES:
+Please generate three summaries with the following characteristics:
+
+1. BEGINNER SUMMARY:
+   - A simplified, jargon-free overview for high school students or non-experts
+   - Explain the main purpose of the research in simple terms
+   - Highlight why this research matters to everyday life
+   - Summarize the key findings using analogies or examples when helpful
+   - Avoid technical terminology whenever possible
+   - Keep the total length to 3-4 short paragraphs
+
+2. INTERMEDIATE SUMMARY:
+   - For someone with a bachelor's degree in a related field
+   - Explain the research purpose, methodology, and findings
+   - Define or explain specialized terminology when first introduced
+   - Highlight the significance of the findings in the broader field
+   - Discuss potential implications of the research
+   - Maintain an intermediate level of technical detail
+   - Format with clear sections: Overview, Methodology, Results, and Implications
+
+3. ADVANCED SUMMARY:
+   - For domain experts or PhD-level researchers in the field
+   - Preserve all technical terminology without simplification
+   - Provide a detailed analysis of the methodology and its appropriateness
+   - Critically evaluate the findings and their significance
+   - Discuss theoretical implications and connections to existing literature
+   - Identify limitations and potential future research directions
+   - Use technical language appropriate for experts in the field
+   - Structure with formal academic headings
+
+
+Use this JSON schema:
+
+PaperSummary = {'extracted_abstract': str, 'beginner': str, 'intermediate': str, 'advanced': str}
+Return: PaperSummary
+
+All three of your summaries should be formatted as markdown with a title and clear sections. The abstract should never be in markdown and should be a single plain text string.
+
+Ensure your response is valid JSON that can be parsed programmatically. Do not include any text outside the JSON structure.
+{% endblock %}
+
+{% block fallback_content %}
+{
+  "extracted_abstract": "Could not extract abstract from the provided text.",
+  "beginner": "Summary generation in progress. This paper discusses {{ abstract|truncate(200) }}...",
+  "intermediate": "Summary generation in progress. This research paper explores {{ abstract|truncate(300) }}...",
+  "advanced": "Summary generation in progress. The full abstract of this paper is: {{ abstract }}"
+}
+{% endblock %} 

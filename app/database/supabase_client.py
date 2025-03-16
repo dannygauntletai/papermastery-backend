@@ -4,6 +4,8 @@ from app.core.logger import get_logger
 from app.core.exceptions import SupabaseError
 from uuid import UUID
 from typing import Dict, Any, Optional, List
+from app.api.v1.models import SourceType
+import re
 
 logger = get_logger(__name__)
 
@@ -16,12 +18,12 @@ except Exception as e:
     raise SupabaseError(f"Failed to initialize Supabase client: {str(e)}")
 
 
-async def get_paper_by_id(paper_id: UUID) -> Optional[Dict[str, Any]]:
+async def get_paper_by_id(paper_id: str) -> Optional[Dict[str, Any]]:
     """
     Retrieve a paper from the Supabase database by its ID.
     
     Args:
-        paper_id: The UUID of the paper
+        paper_id: The ID of the paper
         
     Returns:
         The paper data as a dictionary, or None if not found
@@ -30,9 +32,9 @@ async def get_paper_by_id(paper_id: UUID) -> Optional[Dict[str, Any]]:
         SupabaseError: If there's an error retrieving the paper
     """
     try:
-        response = supabase.table("papers").select("*").eq("id", str(paper_id)).execute()
+        response = supabase.table("papers").select("*").eq("id", paper_id).execute()
         
-        if len(response.data) == 0:
+        if not response.data:
             return None
             
         return response.data[0]
@@ -64,6 +66,46 @@ async def get_paper_by_arxiv_id(arxiv_id: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Error retrieving paper with arXiv ID {arxiv_id}: {str(e)}")
         raise SupabaseError(f"Error retrieving paper with arXiv ID {arxiv_id}: {str(e)}")
+
+
+async def get_paper_by_source(source_url: str, source_type: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve a paper from the Supabase database by its source URL and type.
+    
+    Args:
+        source_url: The source URL of the paper
+        source_type: The source type ("arxiv" or "pdf")
+        
+    Returns:
+        The paper data as a dictionary, or None if not found
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the paper
+    """
+    try:
+        response = supabase.table("papers").select("*").eq("source_url", source_url).eq("source_type", source_type).execute()
+        
+        if not response.data:
+            # For arXiv papers, also try to match by arXiv ID
+            if source_type == "arxiv" and "arxiv.org" in source_url:
+                # Extract arXiv ID from URL
+                match = re.search(r'(\d{4}\.\d{4,5}(?:v\d+)?)', source_url)
+                if match:
+                    arxiv_id = match.group(1)
+                    # Remove version if present
+                    if 'v' in arxiv_id:
+                        arxiv_id = arxiv_id.split('v')[0]
+                    
+                    # Try to find by arXiv ID
+                    response = supabase.table("papers").select("*").eq("arxiv_id", arxiv_id).execute()
+            
+            if not response.data:
+                return None
+                
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error retrieving paper with source URL {source_url}: {str(e)}")
+        raise SupabaseError(f"Error retrieving paper with source URL {source_url}: {str(e)}")
         
 
 async def insert_paper(paper_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -80,6 +122,14 @@ async def insert_paper(paper_data: Dict[str, Any]) -> Dict[str, Any]:
         SupabaseError: If there's an error inserting the paper
     """
     try:
+        # Ensure source_type is set if not provided
+        if "source_type" not in paper_data:
+            paper_data["source_type"] = SourceType.ARXIV
+            
+        # For arXiv papers, ensure source_url is set if not provided
+        if paper_data["source_type"] == SourceType.ARXIV and "source_url" not in paper_data and "arxiv_id" in paper_data:
+            paper_data["source_url"] = f"https://arxiv.org/abs/{paper_data['arxiv_id']}"
+            
         response = supabase.table("papers").insert(paper_data).execute()
         
         if len(response.data) == 0:
@@ -332,7 +382,7 @@ async def get_paper_full_text(paper_id: UUID) -> Optional[str]:
     """
     try:
         # Get the paper from the database
-        paper = await get_paper_by_id(paper_id)
+        paper = await get_paper_by_id(str(paper_id))
         if not paper:
             logger.warning(f"Paper with ID {paper_id} not found")
             return None
@@ -345,25 +395,7 @@ async def get_paper_full_text(paper_id: UUID) -> Optional[str]:
         # Get the full text from the paper
         full_text = paper.get("full_text", "")
         
-        # If the full text is too short (likely just a preview), try to reconstruct from chunks
-        if len(full_text) < 1500:  # Assuming 1000 chars is the preview + some buffer
-            logger.info(f"Full text for paper {paper_id} is too short, attempting to reconstruct from chunks")
-            
-            try:
-                # Query the Pinecone index to get all chunks for this paper
-                from app.services.pinecone_service import get_all_paper_chunks
-                
-                chunks = await get_all_paper_chunks(paper_id)
-                if chunks:
-                    # Reconstruct the full text from chunks
-                    reconstructed_text = "\n\n".join([chunk.get("text", "") for chunk in chunks])
-                    logger.info(f"Successfully reconstructed full text for paper {paper_id} from {len(chunks)} chunks")
-                    return reconstructed_text
-            except Exception as e:
-                logger.warning(f"Error reconstructing full text from chunks: {str(e)}")
-                # Continue with the preview if reconstruction fails
-        
-        logger.info(f"Retrieved full text for paper {paper_id} ({len(full_text)} characters)")
+        # Return the full text directly
         return full_text
     except Exception as e:
         logger.error(f"Error retrieving full text for paper with ID {paper_id}: {str(e)}")

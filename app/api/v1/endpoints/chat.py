@@ -4,8 +4,7 @@ from uuid import UUID
 
 from app.api.v1.models import ChatRequest, ChatResponse, MessageResponse, MessageSource
 from app.core.logger import get_logger
-from app.database.supabase_client import get_paper_by_id, insert_message, get_conversation, create_conversation, get_conversation_messages
-from app.services.pinecone_service import search_similar_chunks
+from app.database.supabase_client import get_paper_by_id, insert_message, get_conversation, create_conversation, get_conversation_messages, get_paper_full_text
 from app.services.llm_service import generate_response, mock_generate_response
 from app.dependencies import validate_environment, rate_limit, get_current_user
 from app.core.config import APP_ENV
@@ -25,15 +24,13 @@ async def chat_with_paper(
     request: Request,
     user_id: str = Depends(get_current_user),
     rate_limited: bool = Depends(rate_limit),
-    # args: Optional[str] = Query(None, description="Not required"),
-    # kwargs: Optional[str] = Query(None, description="Not required")
 ):
     """
     Chat with a paper by asking questions about its content.
     
     The system will:
-    1. Search for relevant chunks in the paper
-    2. Generate a response based on those chunks or the full PDF
+    1. Retrieve the full text of the paper
+    2. Generate a response based on the full text
     3. Return the response along with the source quotes
     
     Args:
@@ -42,8 +39,6 @@ async def chat_with_paper(
         request: The FastAPI request object
         user_id: The ID of the authenticated user
         rate_limited: Rate limiting dependency
-        # args: Optional arguments (system use only)
-        # kwargs: Optional keyword arguments (system use only)
         
     Returns:
         A response to the query along with sources
@@ -62,8 +57,9 @@ async def chat_with_paper(
             detail=f"Paper with ID {paper_id} not found"
         )
     
-    # Check if the paper has been processed (has embeddings)
-    if not paper.get("embedding_id"):
+    # Check if the paper has been processed (has full text)
+    full_text = await get_paper_full_text(paper_id)
+    if not full_text or len(full_text) < 100:  # Minimal text check
         logger.error(f"Paper {paper_id} has not been fully processed")
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -101,50 +97,24 @@ async def chat_with_paper(
         logger.error(f"Error saving user message: {str(e)}")
         # Continue even if message saving fails
     
-    # Get relevant chunks from Pinecone
+    # Generate response based on full text
     try:
-        relevant_chunks = await search_similar_chunks(
-            query=chat_request.query,
-            paper_id=paper_id,
-            top_k=5  # Get top 5 most relevant chunks
-        )
-        
-        if not relevant_chunks:
-            logger.warning(f"No relevant chunks found for query: {chat_request.query[:50]}...")
-            
-            # Return a default response
-            default_response = "I couldn't find specific information in this paper to answer your question. " \
-                              "Could you try asking something more specific about the paper's content?"
-            
-            # Save the bot message to the database
-            try:
-                bot_message_data = {
-                    "user_id": user_id,
-                    "paper_id": str(paper_id),
-                    "conversation_id": conversation_id,
-                    "text": default_response,
-                    "sender": "bot"
-                }
-                await insert_message(bot_message_data)
-                logger.info(f"Saved bot message for conversation {conversation_id}")
-            except Exception as e:
-                logger.error(f"Error saving bot message: {str(e)}")
-                # Continue even if message saving fails
-            
-            return ChatResponse(
-                response=default_response,
-                conversation_id=conversation_id,
-                sources=[]
-            )
-            
-        # Generate response based on chunks and/or PDF
         response_func = mock_generate_response if APP_ENV == "testing" else generate_response
+        
+        # Create a context chunk from the full text
+        context_chunks = [{
+            "text": full_text[:8000],  # Use first 8000 chars to avoid token limits
+            "metadata": {
+                "paper_id": str(paper_id),
+                "page_number": 1
+            }
+        }]
         
         response_data = await response_func(
             query=chat_request.query,
-            context_chunks=relevant_chunks,
+            context_chunks=context_chunks,
             paper_title=paper.get("title", ""),
-            paper_id=paper_id  # Pass paper_id to retrieve PDF
+            paper_id=paper_id
         )
         
         # Save the bot message to the database

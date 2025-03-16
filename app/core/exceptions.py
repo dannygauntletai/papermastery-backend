@@ -10,6 +10,13 @@ class InvalidArXivLinkError(ArXivMasteryException):
         self.link = link
         self.message = f"Invalid arXiv link: {link}"
         super().__init__(self.message)
+
+class InvalidPDFUrlError(ArXivMasteryException):
+    """Raised when a URL does not point to a valid PDF."""
+    def __init__(self, url: str):
+        self.url = url
+        self.message = f"URL does not point to a valid PDF: {url}"
+        super().__init__(self.message)
         
 class ArXivAPIError(ArXivMasteryException):
     """Raised when there is an error with the arXiv API."""
@@ -22,12 +29,6 @@ class PDFExtractionError(ArXivMasteryException):
     def __init__(self, pdf_path: str, message: str):
         self.pdf_path = pdf_path
         self.message = f"Error extracting text from PDF {pdf_path}: {message}"
-        super().__init__(self.message)
-        
-class PineconeError(ArXivMasteryException):
-    """Raised when there is an error with Pinecone operations."""
-    def __init__(self, message: str):
-        self.message = f"Pinecone error: {message}"
         super().__init__(self.message)
         
 class SupabaseError(ArXivMasteryException):
@@ -62,10 +63,16 @@ class ProcessingError(ArXivMasteryException):
     """Exception raised for errors in processing papers."""
     pass
 
+class StorageError(ArXivMasteryException):
+    """Raised when there is an error with Supabase storage operations."""
+    def __init__(self, message: str):
+        self.message = f"Storage error: {message}"
+        super().__init__(self.message)
+
 # HTTP Exception Handlers
 def http_exception_handler(exc):
     """Convert ArXiv Mastery exceptions to appropriate HTTP exceptions."""
-    if isinstance(exc, InvalidArXivLinkError):
+    if isinstance(exc, (InvalidArXivLinkError, InvalidPDFUrlError)):
         return HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=exc.message
@@ -80,7 +87,7 @@ def http_exception_handler(exc):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=exc.message
         )
-    elif isinstance(exc, (PineconeError, SupabaseError)):
+    elif isinstance(exc, SupabaseError):
         return HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=exc.message
@@ -109,6 +116,11 @@ def http_exception_handler(exc):
         return HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error processing paper"
+        )
+    elif isinstance(exc, StorageError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=exc.message
         )
     else:
         return HTTPException(

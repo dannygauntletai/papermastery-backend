@@ -9,17 +9,17 @@ import httpx
 import os
 from uuid import UUID
 
-from app.api.v1.models import PaperMetadata, Author
+from app.api.v1.models import PaperMetadata, Author, SourceType
 from app.core.logger import get_logger
 from app.core.config import ARXIV_API_BASE_URL, OPENALEX_API_BASE_URL
-from app.core.exceptions import ArXivAPIError, InvalidArXivLinkError
+from app.core.exceptions import ArXivAPIError, InvalidArXivLinkError, PDFDownloadError
 from app.utils.pdf_utils import download_pdf, extract_text_from_pdf, clean_pdf_text
-from app.services.pinecone_service import process_pdf_with_langchain
+from app.utils.url_utils import extract_paper_id_from_url
 
 logger = get_logger(__name__)
 
 
-async def fetch_paper_metadata(arxiv_id: str) -> PaperMetadata:
+async def fetch_arxiv_metadata(arxiv_id: str) -> PaperMetadata:
     """
     Fetch paper metadata from the arXiv API.
     
@@ -67,6 +67,9 @@ async def fetch_paper_metadata(arxiv_id: str) -> PaperMetadata:
         except (ValueError, TypeError):
             publication_date = datetime.now()
         
+        # Construct source URL
+        source_url = f"https://arxiv.org/abs/{arxiv_id}"
+        
         # Create metadata object
         metadata = PaperMetadata(
             arxiv_id=arxiv_id,
@@ -75,7 +78,9 @@ async def fetch_paper_metadata(arxiv_id: str) -> PaperMetadata:
             abstract=entry.get('summary', '').replace('\n', ' '),
             publication_date=publication_date,
             categories=[tag.get('term', '') for tag in entry.get('tags', [])],
-            doi=entry.get('arxiv_doi', None)
+            doi=entry.get('arxiv_doi', None),
+            source_type=SourceType.ARXIV,
+            source_url=source_url
         )
         
         logger.info(f"Successfully fetched metadata for arXiv ID: {arxiv_id}")
@@ -86,121 +91,17 @@ async def fetch_paper_metadata(arxiv_id: str) -> PaperMetadata:
         raise ArXivAPIError(f"Error fetching paper metadata: {str(e)}")
 
 
-async def download_and_process_paper(arxiv_id: str, paper_id: Optional[UUID] = None) -> Tuple[str, List[Dict[str, Any]]]:
-    """
-    Download and process a paper from arXiv.
-    
-    This function:
-    1. Downloads the PDF from arXiv
-    2. Extracts text from the PDF
-    3. Processes it using LangChain (if available) or fallback to basic processing
-    4. Breaks it into logical chunks with metadata
-    
-    Args:
-        arxiv_id: The arXiv ID of the paper
-        paper_id: Optional UUID of the paper in the database
-        
-    Returns:
-        Tuple containing full text and a list of text chunks with metadata
-        
-    Raises:
-        ArXivAPIError: If there's an error with the arXiv API
-    """
-    try:
-        # Construct PDF URL
-        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
-        
-        logger.info(f"Downloading PDF for arXiv ID: {arxiv_id}")
-        
-        # Download PDF
-        pdf_path = await download_pdf(pdf_url)
-        
-        # Always try processing with LangChain first
-        try:
-            logger.info(f"Processing PDF with LangChain for arXiv ID: {arxiv_id}")
-            formatted_chunks, langchain_chunks = await process_pdf_with_langchain(pdf_path, paper_id or UUID('00000000-0000-0000-0000-000000000000'))
-            
-            # Combine all text for full text
-            full_text = "\n\n".join([chunk.get("text", "") for chunk in formatted_chunks])
-            
-            logger.info(f"Successfully processed PDF with LangChain for arXiv ID: {arxiv_id}")
-            return full_text, formatted_chunks
-                
-        except Exception as langchain_error:
-            logger.warning(f"LangChain processing failed, falling back to basic processing: {str(langchain_error)}")
-            # Continue with basic processing if LangChain fails
-        
-        # Fallback to basic processing
-        # Extract text from PDF
-        text = await extract_text_from_pdf(pdf_path)
-        
-        # Clean text
-        text = await clean_pdf_text(text)
-        
-        # Break into chunks using chunk_service instead of the simple approach
-        from app.services.chunk_service import chunk_text
-        chunks_with_metadata = await chunk_text(
-            text=text,
-            paper_id=paper_id or UUID('00000000-0000-0000-0000-000000000000'),
-            max_chunk_size=1000,
-            overlap=100
-        )
-        
-        logger.info(f"Successfully processed PDF using basic processing for arXiv ID: {arxiv_id}")
-        
-        return text, chunks_with_metadata
-        
-    except Exception as e:
-        logger.error(f"Error processing PDF for arXiv ID {arxiv_id}: {str(e)}")
-        raise ArXivAPIError(f"Error processing PDF: {str(e)}")
-
-
-def break_text_into_chunks(text: str, max_chunk_size: int = 1000) -> List[str]:
-    """
-    Break text into chunks of approximately equal size.
-    
-    In a real implementation, this would use more sophisticated NLP techniques
-    to break the text at logical boundaries (paragraphs, sections, etc.).
-    
-    Args:
-        text: The text to chunk
-        max_chunk_size: Maximum characters per chunk
-        
-    Returns:
-        List of text chunks
-    """
-    # Simple chunking by paragraphs
-    paragraphs = [p for p in text.split('\n\n') if p.strip()]
-    
-    chunks = []
-    current_chunk = ""
-    
-    for paragraph in paragraphs:
-        # If adding this paragraph would exceed max_chunk_size, start a new chunk
-        if len(current_chunk) + len(paragraph) > max_chunk_size and current_chunk:
-            chunks.append(current_chunk.strip())
-            current_chunk = paragraph
-        else:
-            current_chunk += "\n\n" + paragraph if current_chunk else paragraph
-    
-    # Add the last chunk if it's not empty
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-    
-    return chunks
-
-
-async def get_related_papers(arxiv_id: str, title: Optional[str] = None, abstract: Optional[str] = None) -> List[Dict[str, Any]]:
+async def get_related_papers(paper_id: UUID, title: Optional[str] = None, abstract: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Get related papers using the OpenAlex API.
     
-    This function searches for papers related to the given arXiv paper by:
+    This function searches for papers related to the given paper by:
     1. First finding the paper in OpenAlex using the abstract's first sentence or title
     2. Using the most relevant search result to get the OpenAlex work ID
     3. Using the work ID to find papers that cite this paper
     
     Args:
-        arxiv_id: The arXiv ID of the paper (used only for logging and as a reference)
+        paper_id: The UUID of the paper (used only for logging and as a reference)
         title: Optional title of the paper (will be fetched if not provided)
         abstract: Optional abstract of the paper (will be fetched if not provided)
         
@@ -208,15 +109,20 @@ async def get_related_papers(arxiv_id: str, title: Optional[str] = None, abstrac
         List of related papers with metadata (title, authors, abstract, etc.)
     """
     try:
-        logger.info(f"Fetching related papers for arXiv ID: {arxiv_id} using OpenAlex API")
+        logger.info(f"Fetching related papers for paper ID: {paper_id} using OpenAlex API")
         
         # If title and abstract are not provided, fetch them
         if title is None or abstract is None:
             try:
-                paper_metadata = await fetch_paper_metadata(arxiv_id)
-                title = paper_metadata.title
-                abstract = paper_metadata.abstract
-                logger.info(f"Fetched metadata for paper: {title}")
+                from app.database.supabase_client import get_paper_by_id
+                paper = await get_paper_by_id(paper_id)
+                if paper:
+                    title = paper.get("title", "")
+                    abstract = paper.get("abstract", "")
+                    logger.info(f"Fetched metadata for paper: {title}")
+                else:
+                    logger.error(f"Paper with ID {paper_id} not found")
+                    return []
             except Exception as e:
                 logger.error(f"Error fetching paper metadata: {str(e)}")
                 return []
@@ -409,11 +315,11 @@ async def get_related_papers(arxiv_id: str, title: Optional[str] = None, abstrac
                     "publication_date": publication_date
                 })
             
-            logger.info(f"Found {len(related_papers)} related papers for arXiv ID: {arxiv_id}")
+            logger.info(f"Found {len(related_papers)} related papers for paper ID: {paper_id}")
             return related_papers[:5]  # Limit to 5 related papers
         
     except Exception as e:
-        logger.error(f"Error fetching related papers for arXiv ID {arxiv_id}: {str(e)}")
+        logger.error(f"Error fetching related papers for paper ID {paper_id}: {str(e)}")
         # Return empty list instead of raising an exception
         # since related papers are not critical
         return [] 

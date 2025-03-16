@@ -26,20 +26,30 @@ import time
 
 # Use the standard APIRoute instead of a patched version
 app = FastAPI(
-    title="PaperMastery API",
-    description=(
-        "API for transforming arXiv papers into personalized learning experiences. "
-        "This service fetches academic papers from arXiv, processes them into tiered "
-        "learning materials (beginner, intermediate, advanced), and provides "
-        "interactive learning paths with multimedia integration.\n\n"
-        "Key features:\n"
-        "- PDF processing and chunking with LangChain\n"
-        "- Vector embeddings using OpenAI's text-embedding-3-large model\n"
-        "- RAG (Retrieval-Augmented Generation) for context-aware chat\n"
-        "- Tiered summaries for different expertise levels\n"
-        "- Pinecone vector database integration with namespace-based organization"
-    ),
-    version="0.2.0",
+    title="ArXiv Mastery API",
+    description="""
+    # ArXiv Mastery API
+    
+    This API provides access to the ArXiv Mastery platform, which helps researchers
+    manage, search, and interact with scientific papers from arXiv.
+    
+    ## Features
+    
+    - Paper metadata retrieval from arXiv
+    - PDF downloading and text extraction
+    - Text chunking and processing
+    - Full-text search
+    - Related papers discovery
+    - Chat interface for paper discussions
+    
+    ## Implementation Details
+    
+    - FastAPI backend with async support
+    - Supabase for authentication and database
+    - OpenAI and Google Gemini for AI capabilities
+    - Namespace-based organization for multi-user support
+    """,
+    version="0.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_tags=[
@@ -79,15 +89,28 @@ app.add_middleware(
 start_time = time.time()
 
 
-@app.get("/", dependencies=[Depends(validate_environment)], tags=["system"])
+@app.get("/", include_in_schema=False)
 async def root():
-    """
-    Root endpoint to verify API is running.
-    
-    Returns:
-        dict: A simple welcome message
-    """
-    return {"message": "Welcome to ArXiv Mastery"}
+    """Root endpoint that returns basic API information."""
+    return {
+        "name": "ArXiv Mastery API",
+        "version": "0.1.0",
+        "description": "API for managing and interacting with scientific papers from arXiv",
+        "features": [
+            "Paper metadata retrieval",
+            "PDF downloading and text extraction",
+            "Text chunking and processing",
+            "Full-text search",
+            "Related papers discovery",
+            "Chat interface for paper discussions"
+        ],
+        "technologies": [
+            "FastAPI",
+            "Supabase for authentication and database",
+            "OpenAI and Google Gemini for AI capabilities"
+        ],
+        "documentation": "/docs"
+    }
 
 
 @app.get("/health", status_code=status.HTTP_200_OK, tags=["system"])
@@ -151,7 +174,6 @@ def custom_openapi():
     ## Technology Stack:
     
     * **Backend**: FastAPI, Python, Pydantic
-    * **Vector Database**: Pinecone for semantic search and related papers
     * **Storage**: Supabase for paper metadata and summaries
     * **NLP**: OpenAI GPT models for summarization, chat, flashcards, and quizzes
     * **External APIs**: YouTube API for educational videos

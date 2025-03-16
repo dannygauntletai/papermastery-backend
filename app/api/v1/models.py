@@ -1,22 +1,55 @@
 from pydantic import BaseModel, Field, HttpUrl, validator
 import re
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Union
 from datetime import datetime
 from uuid import UUID
 from enum import Enum
 
+class SourceType(str, Enum):
+    """Enum for paper source types."""
+    ARXIV = "arxiv"
+    PDF = "pdf"
+    FILE = "file"
+
 class PaperSubmission(BaseModel):
-    """Model for submitting an arXiv paper."""
-    arxiv_link: HttpUrl = Field(..., description="URL to the arXiv paper")
+    """Model for submitting a paper."""
+    source_url: Optional[HttpUrl] = Field(None, description="URL to the paper (arXiv or PDF)")
+    source_type: Optional[SourceType] = None
+    file_content: Optional[bytes] = Field(None, description="Binary content of the uploaded PDF file")
+    file_name: Optional[str] = Field(None, description="Name of the uploaded PDF file")
     
-    @validator('arxiv_link')
+    @validator('source_url')
     @classmethod
-    def validate_arxiv_link(cls, v):
-        """Validate that the URL is an arXiv link."""
-        # Convert to string for regex matching
-        v_str = str(v)
-        if not re.match(r'https?://arxiv.org/(?:abs|pdf)/\d+\.\d+(?:v\d+)?', v_str):
-            raise ValueError("URL must be a valid arXiv link (e.g., https://arxiv.org/abs/1912.10389)")
+    def validate_source_url(cls, v, values):
+        """Validate that the URL is a valid URL if provided."""
+        # If source_type is FILE, source_url is not required
+        if values.get('source_type') == SourceType.FILE and v is None:
+            return v
+            
+        # For other source types, source_url is required
+        if v is None and values.get('source_type') != SourceType.FILE:
+            raise ValueError("source_url is required for non-file uploads")
+            
+        # Basic URL validation is handled by HttpUrl type
+        return v
+        
+    @validator('file_content')
+    @classmethod
+    def validate_file_content(cls, v, values):
+        """Validate that file_content is provided for file uploads."""
+        if values.get('source_type') == SourceType.FILE and v is None:
+            raise ValueError("file_content is required for file uploads")
+        return v
+        
+    @validator('file_name')
+    @classmethod
+    def validate_file_name(cls, v, values):
+        """Validate that file_name is provided for file uploads and has a .pdf extension."""
+        if values.get('source_type') == SourceType.FILE:
+            if v is None:
+                raise ValueError("file_name is required for file uploads")
+            if not v.lower().endswith('.pdf'):
+                raise ValueError("Only PDF files are supported")
         return v
 
 class Author(BaseModel):
@@ -26,14 +59,22 @@ class Author(BaseModel):
 
 class PaperMetadata(BaseModel):
     """Model for paper metadata."""
-    arxiv_id: str
+    # Paper identifiers - at least one should be provided if available
+    arxiv_id: Optional[str] = None
+    # Core metadata
     title: str
     authors: List[Author]
     abstract: str 
     publication_date: datetime
-    categories: Optional[List[str]] = None
-    doi: Optional[str] = None
     
+    # Additional metadata
+    categories: Optional[List[str]] = None
+    keywords: Optional[List[str]] = None
+    
+    # Source information
+    source_type: SourceType = SourceType.PDF  # Default to PDF instead of ARXIV
+    source_url: str
+
 class PaperSummary(BaseModel):
     """Model for paper summaries."""
     beginner: str
@@ -42,13 +83,19 @@ class PaperSummary(BaseModel):
     
 class PaperBase(BaseModel):
     """Base model for paper attributes."""
-    arxiv_id: str
+    # Paper identifiers - at least one should be provided if available
+    arxiv_id: Optional[str] = None
+    
+    # Core metadata
     title: str
     authors: List[Author]
     abstract: str
     publication_date: datetime
     full_text: Optional[str] = None
-    embedding_id: Optional[str] = None
+    
+    # Source information
+    source_type: SourceType = SourceType.PDF  # Default to PDF instead of ARXIV
+    source_url: str
 
 class PaperCreate(PaperBase):
     """Model for creating a paper entry."""

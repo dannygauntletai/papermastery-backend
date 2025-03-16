@@ -1,18 +1,22 @@
-from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks, Query, Request
-from typing import List, Optional, Dict, Any
+from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks, Query, Request, File, Form, UploadFile, Body
+from typing import List, Optional, Dict, Any, Union
 from uuid import UUID
 import uuid
+import json
+import hashlib
 
-from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary
+from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary, SourceType
 from app.core.logger import get_logger
-from app.services.arxiv_service import (
-    fetch_paper_metadata,
-    download_and_process_paper,
+from app.services.paper_service import (
+    fetch_arxiv_metadata,
     get_related_papers
 )
+from app.services.pdf_service import download_and_process_paper, download_pdf, read_pdf_file_to_bytes
+from app.services.url_service import detect_url_type, fetch_metadata_from_url
+from app.utils.url_utils import extract_paper_id_from_url
 from app.database.supabase_client import (
-    get_paper_by_arxiv_id,
     get_paper_by_id,
+    get_paper_by_source,
     insert_paper,
     update_paper,
     list_papers as db_list_papers,
@@ -20,11 +24,9 @@ from app.database.supabase_client import (
     create_conversation,
     get_user_paper_conversations
 )
-from app.services.chunk_service import chunk_text
-from app.services.pinecone_service import store_chunks
-from app.services.summarization_service import generate_summaries
-from app.services.learning_service import generate_learning_path
+from app.services.storage_service import upload_file_to_storage, get_file_url
 from app.dependencies import validate_environment, get_current_user
+from app.core.exceptions import InvalidPDFUrlError, PDFDownloadError, StorageError
 
 logger = get_logger(__name__)
 
@@ -38,40 +40,175 @@ router = APIRouter(
 
 @router.post("/submit", response_model=PaperResponse, status_code=status.HTTP_202_ACCEPTED)
 async def submit_paper(
-    paper_submission: PaperSubmission,
+    request: Request,
     background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
-    # args: Optional[str] = Query(None, description="Not required"),
-    # kwargs: Optional[str] = Query(None, description="Not required")
+    file: Optional[UploadFile] = File(None),
 ):
     """
-    Submit an arXiv paper for processing.
+    Submit a paper for processing.
     
     The submission is accepted immediately, and processing happens in the background.
     Check the status of the paper by retrieving it with GET /papers/{id}.
     
+    Supports both JSON and multipart/form-data requests:
+    - For JSON: Send a JSON object with source_url and source_type
+    - For form data: Send file, source_url, and source_type as form fields
+    
     Args:
-        paper_submission: The submission request containing the arXiv link
+        request: The FastAPI request object
+        file: The PDF file (for file uploads)
         background_tasks: FastAPI background tasks
         user_id: The ID of the authenticated user
-        # args: Optional arguments (system use only)
-        # kwargs: Optional keyword arguments (system use only)
         
     Returns:
         The paper data with processing status
     """
-    logger.info(f"Received paper submission from user {user_id}: {paper_submission.arxiv_link}")
+    logger.info(f"Received paper submission from user {user_id}")
     
-    # Extract arXiv ID from the URL
-    url_str = str(paper_submission.arxiv_link)
-    arxiv_id = url_str.split("/")[-1]
-    if "pdf" in arxiv_id:
-        arxiv_id = arxiv_id.replace(".pdf", "")
+    # Determine if this is a JSON request or a form data request
+    content_type = request.headers.get("content-type", "")
+    
+    # Handle JSON request
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+            source_url = body.get("source_url")
+            source_type = body.get("source_type")
+            
+            if not source_url:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="source_url is required for JSON requests"
+                )
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid JSON body"
+            )
+    # Handle form data request
+    else:
+        form = await request.form()
+        source_url = form.get("source_url")
+        source_type = form.get("source_type")
+        file = form.get("file")
+    
+    # Handle file uploads
+    if file:
+        source_type = SourceType.FILE
+        file_name = file.filename
+        file_content = await file.read()
+        
+        logger.info(f"Received file upload from user {user_id}: {file_name}")
+        
+        try:
+            # Upload file to Supabase storage
+            file_path = await upload_file_to_storage(
+                file_content,
+                file_name
+            )
+            
+            # Generate the public URL
+            source_url = await get_file_url(file_path)
+            logger.info(f"File uploaded to storage: {source_url}")
+            
+        except StorageError as e:
+            logger.error(f"Error uploading file: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error uploading file: {str(e)}"
+            )
+    else:
+        # Handle URL submissions
+        if not source_url:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Source URL is required for non-file submissions"
+            )
+            
+        logger.info(f"Received paper submission from user {user_id}: {source_url}")
+        
+        # Convert string source_type to enum if needed
+        if isinstance(source_type, str):
+            if source_type.lower() == "arxiv":
+                source_type = SourceType.ARXIV
+            elif source_type.lower() == "pdf":
+                source_type = SourceType.PDF
+            elif source_type.lower() == "file":
+                source_type = SourceType.FILE
+        
+        # Detect URL type if not provided
+        try:
+            if not source_type or source_type not in [SourceType.ARXIV, SourceType.PDF]:
+                source_type = await detect_url_type(source_url)
+        except InvalidPDFUrlError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"URL does not point to a valid PDF: {source_url}"
+            )
+            
+        # Download the PDF from the URL
+        original_url = source_url
+        try:
+            # Download the PDF
+            pdf_path, is_new_download = await download_pdf(source_url)
+            
+            # Read the PDF file into bytes
+            pdf_content = await read_pdf_file_to_bytes(pdf_path)
+            
+            # Extract filename from URL or use a default name
+            from urllib.parse import urlparse
+            parsed_url = urlparse(source_url)
+            path_parts = parsed_url.path.split('/')
+            file_name = path_parts[-1] if path_parts[-1] else f"paper_{hashlib.md5(source_url.encode()).hexdigest()[:8]}.pdf"
+            
+            # Make sure the filename ends with .pdf
+            if not file_name.lower().endswith('.pdf'):
+                file_name += '.pdf'
+            
+            # Upload the PDF to Supabase storage
+            file_path = await upload_file_to_storage(pdf_content, file_name)
+            
+            # Generate the public URL
+            source_url = await get_file_url(file_path)
+            logger.info(f"PDF downloaded from {original_url} and uploaded to storage: {source_url}")
+            
+        except (PDFDownloadError, InvalidPDFUrlError) as e:
+            logger.error(f"Error downloading PDF from URL: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Error downloading PDF: {str(e)}"
+            )
+        except StorageError as e:
+            logger.error(f"Error uploading PDF to storage: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error uploading PDF to storage: {str(e)}"
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error processing PDF: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Unexpected error processing PDF: {str(e)}"
+            )
+    
+    # Extract paper ID from URL if it's an arXiv URL
+    paper_ids = await extract_paper_id_from_url(original_url if 'original_url' in locals() else source_url)
+    arxiv_id = paper_ids.get('arxiv_id')
+    
+    if source_type == SourceType.ARXIV and not arxiv_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid arXiv URL: {original_url if 'original_url' in locals() else source_url}"
+        )
     
     # Check if paper already exists
-    existing_paper = await get_paper_by_arxiv_id(arxiv_id)
+    # If we downloaded and reuploaded, use the original URL for checking
+    check_url = original_url if 'original_url' in locals() else source_url
+    existing_paper = await get_paper_by_source(check_url, source_type)
+
     if existing_paper:
-        logger.info(f"Paper with arXiv ID {arxiv_id} already exists, adding to user's papers")
+        logger.info(f"Paper with source URL {source_url} already exists, adding to user's papers")
         await add_paper_to_user(user_id, existing_paper["id"])
         
         # Check if a conversation exists for this paper, create one if not
@@ -89,21 +226,37 @@ async def submit_paper(
         
         return existing_paper
     
-    # Fetch paper metadata from arXiv
-    paper_metadata = await fetch_paper_metadata(arxiv_id)
+    # Fetch paper metadata based on source type
+    try:
+        # For arXiv papers, use the original URL for metadata extraction
+        metadata_url = original_url if source_type == SourceType.ARXIV and 'original_url' in locals() else source_url
+        metadata_source_type = SourceType.ARXIV if source_type == SourceType.ARXIV and 'original_url' in locals() else source_type
+        
+        paper_metadata = await fetch_metadata_from_url(metadata_url, metadata_source_type)
+    except Exception as e:
+        logger.error(f"Error fetching metadata for URL {source_url}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching paper metadata: {str(e)}"
+        )
     
     # Create initial paper entry in database
     paper_data = {
-        "arxiv_id": arxiv_id,
         "title": paper_metadata.title,
         "authors": [{"name": author.name, "affiliations": author.affiliations} for author in paper_metadata.authors],
-        "abstract": paper_metadata.abstract,
+        "abstract": '',  # Set abstract to None initially, will be extracted during processing
         "publication_date": paper_metadata.publication_date.isoformat(),
         "summaries": None,
         "embedding_id": None,
         "related_papers": None,
+        "source_type": source_type,
+        "source_url": source_url,  # Always use the Supabase storage URL for storage
         "tags": {"status": "pending"}  # Use tags field to track status instead of processing_status
     }
+    
+    # Add arXiv ID if available
+    if hasattr(paper_metadata, 'arxiv_id') and paper_metadata.arxiv_id:
+        paper_data["arxiv_id"] = paper_metadata.arxiv_id
     
     new_paper = await insert_paper(paper_data)
     
@@ -126,11 +279,12 @@ async def submit_paper(
     # Process paper in background
     background_tasks.add_task(
         process_paper_in_background,
-        arxiv_id=arxiv_id,
+        source_url=source_url,
+        source_type=source_type,
         paper_id=UUID(new_paper["id"])
     )
     
-    logger.info(f"Paper submission accepted, processing in background: {arxiv_id}")
+    logger.info(f"Paper submission accepted, processing in background: {source_url}")
     return new_paper
 
 
@@ -232,48 +386,57 @@ async def get_paper_summaries(
 @router.get("/{paper_id}/related", response_model=List[Dict[str, Any]])
 async def get_related_papers_for_paper(
     paper_id: UUID,
-    # args: Optional[str] = Query(None, description="Not required"),
-    # kwargs: Optional[str] = Query(None, description="Not required")
+    user_id: str = Depends(get_current_user)
 ):
     """
-    Get papers related to the specified paper.
+    Get related papers for a specific paper.
     
     Args:
-        paper_id: The UUID of the paper
-        # args: Optional arguments (system use only)
-        # kwargs: Optional keyword arguments (system use only)
+        paper_id: The ID of the paper to get related papers for
+        user_id: The ID of the authenticated user
         
     Returns:
-        List of related papers with similarity scores
-        
-    Raises:
-        HTTPException: If paper not found
+        List of related papers
     """
-    paper = await get_paper_by_id(paper_id)
-    
+    # Get the paper
+    paper = await get_paper_by_id(str(paper_id))
     if not paper:
-        logger.warning(f"Paper with ID {paper_id} not found")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Paper with ID {paper_id} not found"
         )
     
-    # Check if related papers are already stored in the database
+    # Check if related papers are already in the database
     if paper.get("related_papers"):
-        logger.info(f"Retrieved related papers for paper with ID: {paper_id} from database")
+        logger.info(f"Using cached related papers for paper with ID {paper_id}")
         return paper.get("related_papers")
     
-    # If not in database, fetch them from OpenAlex API
-    arxiv_id = paper.get("arxiv_id")
-    if not arxiv_id:
-        logger.warning(f"Paper with ID {paper_id} has no arXiv ID")
+    # If not in database, fetch them based on source type
+    if paper.get("source_type") == SourceType.ARXIV:
+        # For arXiv papers, use the arXiv ID to fetch related papers
+        arxiv_id = paper.get("arxiv_id")
+        if not arxiv_id:
+            # Try to extract arXiv ID from source_url
+            source_url = paper.get("source_url")
+            if source_url:
+                arxiv_id = await extract_paper_id_from_url(source_url)
+            
+            if not arxiv_id:
+                logger.warning(f"Paper with ID {paper_id} has no arXiv ID")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Paper has no arXiv ID and cannot fetch related papers"
+                )
+        
+        # Fetch related papers
+        related_papers = await get_related_papers(arxiv_id)
+    else:
+        # For non-arXiv papers, we currently don't support finding related papers
+        logger.warning(f"Related papers not supported for source type {paper.get('source_type')}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Paper has no arXiv ID"
+            detail=f"Related papers not supported for source type {paper.get('source_type')}"
         )
-    
-    # Fetch related papers
-    related_papers = await get_related_papers(arxiv_id)
     
     if not related_papers:
         logger.warning(f"No related papers found for paper with ID {paper_id}")
@@ -284,7 +447,7 @@ async def get_related_papers_for_paper(
     
     # Update the paper in the database with the related papers
     await update_paper(
-        paper_id,
+        str(paper_id),
         {"related_papers": related_papers}
     )
     
@@ -334,119 +497,118 @@ async def get_paper_conversations(
 
 
 # Background processing function
-async def process_paper_in_background(arxiv_id: str, paper_id: UUID):
+async def process_paper_in_background(source_url: str, source_type: str, paper_id: UUID) -> None:
     """
     Process a paper in the background.
     
     This function:
-    1. Downloads the PDF from arXiv
-    2. Extracts text from the PDF
-    3. Breaks it into logical chunks
-    4. Generates embeddings and stores them in Pinecone
-    5. Finds related papers
-    6. Generates summaries
-    7. Generates learning materials (videos, flashcards, quizzes)
-    8. Updates the paper in the database
+    1. Downloads and extracts text from the paper
+    2. Generates summaries for the paper
+    3. Finds related papers
+    4. Updates the paper in the database
     
     Args:
-        arxiv_id: The arXiv ID of the paper
-        paper_id: The UUID of the paper in our database
+        source_url: The URL to the paper (Supabase storage URL for uploaded files)
+        source_type: The type of source ("arxiv", "pdf", or "file")
+        paper_id: The UUID of the paper in the database
     """
-    embedding_id = None
-    related_papers = None
-    error_message = None
-    
     try:
-        logger.info(f"Processing paper in background: {arxiv_id}")
+        logger.info(f"Starting background processing for paper {paper_id} from {source_url}")
         
         # Update status to processing
         await update_paper(paper_id, {"tags": {"status": "processing"}})
         
-        # Download and process PDF - pass the paper_id for LangChain processing
-        full_text, text_chunks = await download_and_process_paper(arxiv_id, paper_id)
-        
-        # Chunk the text - now processes with LangChain if available
-        chunks = await chunk_text(full_text, paper_id, text_chunks)
-        
-        # Try to store chunks in Pinecone, but continue if it fails
-        try:
-            embedding_id = await store_chunks(paper_id, chunks)
-            logger.info(f"Successfully stored chunks in Pinecone for paper ID: {paper_id}")
-        except Exception as pinecone_error:
-            logger.error(f"Error storing chunks in Pinecone for paper ID {paper_id}: {str(pinecone_error)}")
-            error_message = f"Pinecone error: {str(pinecone_error)[:200]}"
-            # Continue processing despite Pinecone error
-        
-        # Try to get related papers, but continue if it fails
-        try:
-            related_papers = await get_related_papers(arxiv_id)
-            logger.info(f"Successfully fetched related papers for paper ID: {paper_id}")
-        except Exception as related_papers_error:
-            logger.error(f"Error fetching related papers for paper ID {paper_id}: {str(related_papers_error)}")
-            error_message = error_message or f"Related papers error: {str(related_papers_error)[:200]}"
-            # Continue processing despite related papers error
-        
-        # Generate summaries
+        # Get the paper from the database to access title and abstract
         paper = await get_paper_by_id(paper_id)
-        summaries = await generate_summaries(
-            paper_id=paper_id,
-            abstract=paper.get("abstract", ""),
-            full_text=full_text,
-            chunks=chunks
-        )
+        if not paper:
+            logger.error(f"Paper with ID {paper_id} not found in database")
+            await update_paper(paper_id, {"tags": {"status": "error", "error_message": "Paper not found in database"}})
+            return
         
-        # Generate learning materials (videos, flashcards, quizzes)
+        # Download and extract text from paper
+        # Use the storage URL for downloading the PDF
+        full_text = await download_and_process_paper(source_url, paper_id, source_type)
+        
+        # Generate summaries for the paper
+        from app.services.summarization_service import generate_summaries
         try:
-            learning_path = await generate_learning_path(str(paper_id))
-            logger.info(f"Successfully generated learning materials for paper ID: {paper_id}")
-            has_learning_materials = True
-            learning_materials_count = len(learning_path.items) if learning_path and learning_path.items else 0
-        except Exception as learning_error:
-            logger.error(f"Error generating learning materials for paper ID {paper_id}: {str(learning_error)}")
-            error_message = error_message or f"Learning materials error: {str(learning_error)[:200]}"
-            has_learning_materials = False
-            learning_materials_count = 0
-            # Continue processing despite learning materials generation error
+            logger.info(f"Generating summaries and extracting abstract for paper {paper_id}")
+            summaries, extracted_abstract = await generate_summaries(
+                paper_id=paper_id,
+                title=paper.get("title", ""),
+                abstract=paper.get("abstract"),  # Pass the existing abstract, which might be None
+                full_text=full_text,
+                extract_abstract=True  # Enable abstract extraction
+            )
+            logger.info(f"Successfully generated summaries and extracted abstract for paper {paper_id}")
+        except Exception as summary_error:
+            logger.error(f"Error generating summaries and extracting abstract for paper {paper_id}: {str(summary_error)}")
+            summaries = None
+            extracted_abstract = None
         
-        # Update the paper in the database
+        # Find related papers
+        related_papers = []
+        try:
+            # Get related papers using the paper ID, title, and abstract
+            related_papers = await get_related_papers(
+                paper_id=paper_id,
+                title=paper.get("title"),
+                abstract=extracted_abstract or paper.get("abstract")
+            )
+        except Exception as e:
+            logger.error(f"Error getting related papers for {source_url}: {str(e)}")
+        
+        # Update paper with processed data
         update_data = {
-            "full_text": full_text[:1000],  # Store first 1000 chars as preview
-            "summaries": {
+            "full_text": full_text,
+            "related_papers": related_papers,
+            "tags": {"status": "completed"}
+        }
+        
+        # Add extracted abstract to update data if available
+        if extracted_abstract:
+            update_data["abstract"] = extracted_abstract
+        
+        # Add summaries to update data if available
+        if summaries:
+            # Convert PaperSummary object to a dictionary for JSON serialization
+            update_data["summaries"] = {
                 "beginner": summaries.beginner,
                 "intermediate": summaries.intermediate,
                 "advanced": summaries.advanced
-            },
-            "chunk_count": len(chunks),
-            "tags": {
-                "status": "completed",
-                "has_learning_materials": has_learning_materials,
-                "learning_materials_count": learning_materials_count
             }
-        }
         
-        # Add embedding_id and related_papers if they were successfully retrieved
-        if embedding_id:
-            update_data["embedding_id"] = embedding_id
-        if related_papers:
-            update_data["related_papers"] = related_papers
-        if error_message:
-            update_data["partial_error"] = error_message
+        try:
+            await update_paper(paper_id, update_data)
+            logger.info(f"Background processing completed for paper {paper_id}")
+        except Exception as db_error:
+            logger.error(f"Database error updating paper {paper_id}: {str(db_error)}")
             
-        await update_paper(paper_id, update_data)
-        
-        logger.info(f"Background processing completed for paper: {arxiv_id}")
+            # If there's an error with the full text, try to update without it
+            if "full_text" in update_data:
+                logger.warning(f"Attempting to update paper {paper_id} without full text")
+                # Try to update with a truncated or sanitized version of the text
+                try:
+                    # Further sanitize the text by removing any potential problematic characters
+                    import re
+                    sanitized_text = re.sub(r'[^\x20-\x7E\n\r\t]', '', full_text)
+                    # Truncate if still too large
+                    if len(sanitized_text) > 1000000:  # Limit to 1MB
+                        sanitized_text = sanitized_text[:1000000] + "... [truncated]"
+                    
+                    update_data["full_text"] = sanitized_text
+                    await update_paper(paper_id, update_data)
+                    logger.info(f"Successfully updated paper {paper_id} with sanitized text")
+                except Exception as sanitize_error:
+                    logger.error(f"Failed to update paper {paper_id} even with sanitized text: {str(sanitize_error)}")
+                    # Last resort: update without the full text
+                    del update_data["full_text"]
+                    update_data["tags"]["status"] = "partial"
+                    update_data["tags"]["error_message"] = "Could not store full text due to encoding issues"
+                    await update_paper(paper_id, update_data)
+                    logger.warning(f"Updated paper {paper_id} without full text")
         
     except Exception as e:
-        logger.error(f"Error processing paper {arxiv_id} in background: {str(e)}")
-        
-        # Update paper status to error
-        try:
-            await update_paper(
-                paper_id,
-                {
-                    "tags": {"status": "error"},
-                    "error_message": str(e)[:500]  # Limit error message length
-                }
-            )
-        except Exception as update_error:
-            logger.error(f"Error updating paper status: {str(update_error)}") 
+        logger.error(f"Error processing paper {paper_id} in background: {str(e)}")
+        # Update status to error
+        await update_paper(paper_id, {"tags": {"status": "error", "error_message": str(e)}}) 
