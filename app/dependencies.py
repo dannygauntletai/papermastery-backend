@@ -29,7 +29,7 @@ async def validate_environment():
         HTTPException: If any environment variables are missing
     """
     # Note: We've already validated in config.py, but this is a fallback
-    from app.core.config import SUPABASE_URL, SUPABASE_KEY, PINECONE_API_KEY
+    from app.core.config import SUPABASE_URL, SUPABASE_KEY
     
     missing_vars = []
     
@@ -37,8 +37,6 @@ async def validate_environment():
         missing_vars.append("SUPABASE_URL")
     if not SUPABASE_KEY:
         missing_vars.append("SUPABASE_KEY")
-    if not PINECONE_API_KEY:
-        missing_vars.append("PINECONE_API_KEY")
         
     if missing_vars:
         logger.error(f"Missing environment variables: {', '.join(missing_vars)}")

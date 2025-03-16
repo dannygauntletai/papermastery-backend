@@ -31,12 +31,6 @@ class PDFExtractionError(ArXivMasteryException):
         self.message = f"Error extracting text from PDF {pdf_path}: {message}"
         super().__init__(self.message)
         
-class PineconeError(ArXivMasteryException):
-    """Raised when there is an error with Pinecone operations."""
-    def __init__(self, message: str):
-        self.message = f"Pinecone error: {message}"
-        super().__init__(self.message)
-        
 class SupabaseError(ArXivMasteryException):
     """Raised when there is an error with Supabase operations."""
     def __init__(self, message: str):
@@ -93,7 +87,7 @@ def http_exception_handler(exc):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=exc.message
         )
-    elif isinstance(exc, (PineconeError, SupabaseError)):
+    elif isinstance(exc, SupabaseError):
         return HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=exc.message

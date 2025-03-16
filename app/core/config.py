@@ -29,11 +29,6 @@ class Settings(BaseSettings):
     SUPABASE_STORAGE_BUCKET: str = Field(default_factory=lambda: os.getenv("SUPABASE_STORAGE_BUCKET", "papers"))
     MAX_FILE_SIZE_MB: int = Field(default_factory=lambda: int(os.getenv("MAX_FILE_SIZE_MB", "100")))
     
-    # Pinecone configuration
-    PINECONE_API_KEY: str = Field(default_factory=lambda: os.getenv("PINECONE_API_KEY", ""))
-    PINECONE_ENVIRONMENT: str = Field(default_factory=lambda: os.getenv("PINECONE_ENVIRONMENT", "us-west1-gcp"))
-    PINECONE_INDEX: str = Field(default_factory=lambda: os.getenv("PINECONE_INDEX", "arxiv-chunks"))
-    
     # ArXiv API configuration
     ARXIV_API_BASE_URL: str = Field(default_factory=lambda: os.getenv("ARXIV_API_BASE_URL", "http://export.arxiv.org/api/query"))
     
@@ -74,8 +69,6 @@ class Settings(BaseSettings):
             errors.append("SUPABASE_URL environment variable is not set")
         if not self.SUPABASE_KEY:
             errors.append("SUPABASE_KEY environment variable is not set")
-        if not self.PINECONE_API_KEY:
-            errors.append("PINECONE_API_KEY environment variable is not set")
         if not self.OPENAI_API_KEY and not self.GEMINI_API_KEY and self.APP_ENV != "testing":
             errors.append("Either OPENAI_API_KEY or GEMINI_API_KEY environment variable must be set for non-testing environments")
             
@@ -88,9 +81,6 @@ SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
 SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
 SUPABASE_STORAGE_BUCKET: str = os.getenv("SUPABASE_STORAGE_BUCKET", "papers")
 MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
-PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY", "")
-PINECONE_ENVIRONMENT: str = os.getenv("PINECONE_ENVIRONMENT", "us-west1-gcp")
-PINECONE_INDEX: str = os.getenv("PINECONE_INDEX", "arxiv-chunks")
 ARXIV_API_BASE_URL: str = os.getenv("ARXIV_API_BASE_URL", "http://export.arxiv.org/api/query")
 OPENALEX_API_BASE_URL: str = os.getenv("OPENALEX_API_BASE_URL", "https://api.openalex.org/works")
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
@@ -121,7 +111,5 @@ def validate_config() -> None:
         raise ValueError("SUPABASE_URL environment variable is not set")
     if not SUPABASE_KEY:
         raise ValueError("SUPABASE_KEY environment variable is not set")
-    if not PINECONE_API_KEY:
-        raise ValueError("PINECONE_API_KEY environment variable is not set")
     if not OPENAI_API_KEY and not GEMINI_API_KEY and APP_ENV != "testing":
         raise ValueError("Either OPENAI_API_KEY or GEMINI_API_KEY environment variable must be set for non-testing environments") 

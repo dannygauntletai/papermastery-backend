@@ -13,18 +13,20 @@ services:
         sync: false
       - key: SUPABASE_KEY
         sync: false
-      - key: PINECONE_API_KEY
+      - key: SUPABASE_SERVICE_KEY
         sync: false
-      - key: PINECONE_ENVIRONMENT
-        value: us-west1-gcp
-      - key: PINECONE_INDEX
-        value: arxiv-chunks
-      - key: ARXIV_API_BASE_URL
-        value: http://export.arxiv.org/api/query
-      - key: OPENALEX_API_BASE_URL
-        value: https://api.openalex.org/works
-      - key: LOG_LEVEL
-        value: INFO
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: YOUTUBE_API_KEY
+        sync: false
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: SENDGRID_FROM_EMAIL
+        sync: false
       - key: APP_ENV
         value: production
+      - key: LOG_LEVEL
+        value: INFO
     autoDeploy: true 

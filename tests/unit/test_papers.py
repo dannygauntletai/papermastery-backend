@@ -65,17 +65,14 @@ def mock_arxiv_service():
                     ]
                     mock_chunk.return_value = mock_chunks
                     
-                    with patch("app.services.pinecone_service.store_chunks") as mock_store:
-                        mock_store.return_value = str(uuid.uuid4())
+                    with patch("app.services.summarization_service.generate_summaries") as mock_summarize:
+                        mock_summarize.return_value = {
+                            "beginner": "Beginner summary",
+                            "intermediate": "Intermediate summary",
+                            "advanced": "Advanced summary"
+                        }
                         
-                        with patch("app.services.summarization_service.generate_summaries") as mock_summarize:
-                            mock_summarize.return_value = {
-                                "beginner": "Beginner summary",
-                                "intermediate": "Intermediate summary",
-                                "advanced": "Advanced summary"
-                            }
-                            
-                            yield mock_fetch
+                        yield mock_fetch
 
 @pytest.fixture
 def mock_supabase_client():

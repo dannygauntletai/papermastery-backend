@@ -14,7 +14,6 @@ from app.core.logger import get_logger
 from app.core.config import ARXIV_API_BASE_URL, OPENALEX_API_BASE_URL
 from app.core.exceptions import ArXivAPIError, InvalidArXivLinkError
 from app.utils.pdf_utils import download_pdf, extract_text_from_pdf, clean_pdf_text
-from app.services.pinecone_service import process_pdf_with_langchain
 
 logger = get_logger(__name__)
 
@@ -98,7 +97,7 @@ async def download_and_process_paper(arxiv_id: str, paper_id: Optional[UUID] = N
     This function:
     1. Downloads the PDF from arXiv
     2. Extracts text from the PDF
-    3. Processes it using LangChain (if available) or fallback to basic processing
+    3. Processes it using basic processing
     4. Breaks it into logical chunks with metadata
     
     Args:
@@ -120,29 +119,13 @@ async def download_and_process_paper(arxiv_id: str, paper_id: Optional[UUID] = N
         # Download PDF
         pdf_path = await download_pdf(pdf_url)
         
-        # Always try processing with LangChain first
-        try:
-            logger.info(f"Processing PDF with LangChain for arXiv ID: {arxiv_id}")
-            formatted_chunks, langchain_chunks = await process_pdf_with_langchain(pdf_path, paper_id or UUID('00000000-0000-0000-0000-000000000000'))
-            
-            # Combine all text for full text
-            full_text = "\n\n".join([chunk.get("text", "") for chunk in formatted_chunks])
-            
-            logger.info(f"Successfully processed PDF with LangChain for arXiv ID: {arxiv_id}")
-            return full_text, formatted_chunks
-                
-        except Exception as langchain_error:
-            logger.warning(f"LangChain processing failed, falling back to basic processing: {str(langchain_error)}")
-            # Continue with basic processing if LangChain fails
-        
-        # Fallback to basic processing
         # Extract text from PDF
         text = await extract_text_from_pdf(pdf_path)
         
         # Clean text
         text = await clean_pdf_text(text)
         
-        # Break into chunks using chunk_service instead of the simple approach
+        # Break into chunks using chunk_service
         from app.services.chunk_service import chunk_text
         chunks_with_metadata = await chunk_text(
             text=text,
