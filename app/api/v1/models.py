@@ -356,12 +356,9 @@ class AnswerResult(BaseModel):
 
 class UserProgressRecord(BaseModel):
     """API model for user progress records."""
-    id: str
     user_id: str
     item_id: str
-    status: str
-    time_spent_seconds: int
-    timestamp: str
+    completed: bool
 
 # Chat models
 class ChatRequest(BaseModel):

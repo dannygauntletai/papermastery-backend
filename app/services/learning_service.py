@@ -1414,199 +1414,6 @@ async def get_learning_path(paper_id: str) -> Dict[str, Any]:
         # This will raise an exception if generation fails
         return await generate_learning_path(paper_id)
 
-async def record_user_progress(user_id: str, item_id: str, status: str, 
-                             sprt_log_likelihood_ratio: float = 0.0, 
-                             decision: str = "in_progress") -> Dict[str, Any]:
-    """
-    Record a user's progress on a learning item.
-    """
-    logger.info(f"Recording progress for user {user_id} on item {item_id}, status: {status}")
-    
-    try:
-        progress_data = {
-            "user_id": user_id,
-            "item_id": item_id,
-            "status": status,
-            "sprt_log_likelihood_ratio": sprt_log_likelihood_ratio,
-            "decision": decision
-        }
-        
-        # Upsert into progress table (insert if not exists, update if exists)
-        result = supabase.table("progress").upsert(progress_data).execute()
-        
-        if not result.data:
-            raise Exception("Failed to record user progress")
-            
-        return result.data[0]
-        
-    except Exception as e:
-        logger.error(f"Error recording user progress: {str(e)}")
-        raise
-
-async def record_answer(user_id: str, question_id: str, answer: str) -> Dict[str, Any]:
-    """
-    Record a user's answer to a question.
-    """
-    logger.info(f"Recording answer for user {user_id} on question {question_id}")
-    
-    try:
-        answer_data = {
-            "user_id": user_id,
-            "question_id": question_id,
-            "answer": answer,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        # Insert into answers table
-        result = supabase.table("answers").insert(answer_data).execute()
-        
-        if not result.data:
-            raise Exception("Failed to record user answer")
-            
-        return result.data[0]
-        
-    except Exception as e:
-        logger.error(f"Error recording user answer: {str(e)}")
-        raise
-
-# User progress tracking
-progress_records: List[UserProgressRecord] = []
-
-async def record_progress(item_id: str, user_id: str, status: str, time_spent_seconds: int) -> None:
-    """
-    Record a user's progress on a learning item.
-    
-    Args:
-        item_id: The ID of the learning item
-        user_id: The ID of the user
-        status: The completion status (started, completed, etc.)
-        time_spent_seconds: Time spent on the item in seconds
-    """
-    record = UserProgressRecord(
-        id=str(uuid.uuid4()),
-        user_id=user_id,
-        item_id=item_id,
-        status=status,
-        time_spent_seconds=time_spent_seconds,
-        timestamp=datetime.now().isoformat()
-    )
-    progress_records.append(record)
-    logger.info(f"Recorded progress for user {user_id} on item {item_id}: {status}")
-
-async def record_paper_progress(paper_id: str, user_id: str, progress_type: str) -> None:
-    """
-    Record a user's progress on a paper's summary or related papers.
-    
-    Args:
-        paper_id: The ID of the paper
-        user_id: The ID of the user
-        progress_type: The type of progress ('summary' or 'related_papers')
-    """
-    try:
-        # Validate progress_type
-        if progress_type not in ['summary', 'related_papers']:
-            raise ValueError(f"Invalid progress_type: {progress_type}")
-        
-        # Determine which column to update
-        column_name = f"{progress_type}_completed"
-        
-        # Update the paper record in the database
-        response = supabase.table('papers').update({
-            column_name: True
-        }).eq('id', paper_id).execute()
-        
-        if not response.data:
-            logger.warning(f"No paper found with ID {paper_id} when recording {progress_type} progress")
-            return
-        
-        logger.info(f"Recorded {progress_type} progress for user {user_id} on paper {paper_id}")
-    except Exception as e:
-        logger.error(f"Error recording paper progress: {str(e)}")
-        raise
-
-async def get_user_progress(user_id: str, paper_id: Optional[str] = None) -> List[UserProgressRecord]:
-    """
-    Get a user's progress on learning materials.
-    
-    Args:
-        user_id: The ID of the user
-        paper_id: Optional paper ID to filter by
-        
-    Returns:
-        List[UserProgressRecord]: The user's progress records
-    """
-    try:
-        if paper_id:
-            # In a real implementation, we would query the database with a join
-            # For the mock implementation, we'll just filter the in-memory records
-            records = [record for record in progress_records if record.user_id == user_id]
-            # In production, we would filter by paper_id using a join with the items table
-            return records
-        else:
-            return [record for record in progress_records if record.user_id == user_id]
-    except Exception as e:
-        logger.error(f"Error getting user progress: {str(e)}")
-        raise
-
-async def submit_answer(question_id: str, user_id: str, answer_index: int) -> AnswerResult:
-    """
-    Submit an answer to a quiz question and evaluate it.
-    
-    Args:
-        question_id: The ID of the quiz question
-        user_id: The ID of the user
-        answer_index: The index of the selected answer
-        
-    Returns:
-        AnswerResult: The result of the answer submission
-    """
-    # Find the learning item for this question
-    # In a real implementation, this would query the database
-    
-    # Mock implementation - look through all cached learning paths
-    correct_answer = None
-    explanation = None
-    
-    for learning_path in learning_path_cache.values():
-        for item in learning_path.items:
-            if item.id == question_id and item.type == LearningItemType.QUIZ:
-                correct_answer = item.metadata.get("correct_answer")
-                explanation = item.metadata.get("explanation")
-                break
-        if correct_answer is not None:
-            break
-    
-    # If we couldn't find the question, return a default response
-    if correct_answer is None:
-        return AnswerResult(
-            is_correct=False,
-            correct_answer=0,  # Default
-            explanation="Question not found",
-            user_id=user_id,
-            question_id=question_id,
-            selected_answer=answer_index,
-            timestamp=datetime.now().isoformat()
-        )
-    
-    # Evaluate the answer
-    is_correct = answer_index == correct_answer
-    
-    # Record the result
-    result = AnswerResult(
-        is_correct=is_correct,
-        correct_answer=correct_answer,
-        explanation=explanation or "No explanation available",
-        user_id=user_id,
-        question_id=question_id,
-        selected_answer=answer_index,
-        timestamp=datetime.now().isoformat()
-    )
-    
-    # In a real implementation, we would store this result in the database
-    logger.info(f"User {user_id} answered question {question_id}: {'Correct' if is_correct else 'Incorrect'}")
-    
-    return result
-
 async def get_learning_items_by_level(paper_id: str, difficulty_level: int, use_mock_for_tests: bool = False) -> List[LearningItem]:
     """
     Get learning items filtered by difficulty level.
@@ -1696,4 +1503,184 @@ def get_difficulty_level(level):
     
     # If we can't determine the level, default to beginner
     logger.warning(f"Unknown level value: {level}, defaulting to beginner (1)")
-    return 1 
+    return 1
+
+async def record_progress(item_id: str, user_id: str, completed: bool) -> None:
+    """
+    Record a user's progress on a learning item.
+    
+    Args:
+        item_id: The ID of the learning item
+        user_id: The ID of the user
+        completed: Whether the item is completed
+    """
+    try:
+        # Insert a new progress record in the database
+        response = supabase.table('progress').insert({
+            'user_id': user_id,
+            'item_id': item_id,
+            'completed': completed
+        }).execute()
+        
+        if not response.data:
+            logger.warning(f"Failed to record progress for user {user_id} on item {item_id}")
+            return
+        
+        logger.info(f"Recorded progress for user {user_id} on item {item_id}: completed={completed}")
+    except Exception as e:
+        logger.error(f"Error recording progress: {str(e)}")
+        raise
+
+async def record_answer(user_id: str, question_id: str, answer: str) -> Dict[str, Any]:
+    """
+    Record a user's answer to a question.
+    """
+    logger.info(f"Recording answer for user {user_id} on question {question_id}")
+    
+    try:
+        answer_data = {
+            "user_id": user_id,
+            "question_id": question_id,
+            "answer": answer,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Insert into answers table
+        result = supabase.table("answers").insert(answer_data).execute()
+        
+        if not result.data:
+            raise Exception("Failed to record user answer")
+            
+        return result.data[0]
+        
+    except Exception as e:
+        logger.error(f"Error recording user answer: {str(e)}")
+        raise
+
+async def record_paper_progress(paper_id: str, user_id: str, progress_type: str) -> None:
+    """
+    Record a user's progress on a paper's summary or related papers.
+    
+    Args:
+        paper_id: The ID of the paper
+        user_id: The ID of the user
+        progress_type: The type of progress ('summary' or 'related_papers')
+    """
+    try:
+        # Validate progress_type
+        if progress_type not in ['summary', 'related_papers']:
+            raise ValueError(f"Invalid progress_type: {progress_type}")
+        
+        # Determine which column to update
+        column_name = f"{progress_type}_completed"
+        
+        # Update the paper record in the database
+        response = supabase.table('papers').update({
+            column_name: True
+        }).eq('id', paper_id).execute()
+        
+        if not response.data:
+            logger.warning(f"No paper found with ID {paper_id} when recording {progress_type} progress")
+            return
+        
+        logger.info(f"Recorded {progress_type} progress for user {user_id} on paper {paper_id}")
+    except Exception as e:
+        logger.error(f"Error recording paper progress: {str(e)}")
+        raise
+
+async def get_user_progress(user_id: str, paper_id: Optional[str] = None) -> List[UserProgressRecord]:
+    """
+    Get a user's progress on learning materials.
+    
+    Args:
+        user_id: The ID of the user
+        paper_id: Optional paper ID to filter by
+        
+    Returns:
+        List[UserProgressRecord]: The user's progress records
+    """
+    try:
+        # Query the progress table in Supabase
+        query = supabase.table('progress').select('*').eq('user_id', user_id)
+        
+        # If paper_id is provided, we need to join with the items table to filter by paper_id
+        # This would require a more complex query in a production environment
+        # For now, we'll just return all progress records for the user
+        
+        response = query.execute()
+        
+        if not response.data:
+            return []
+        
+        # Convert the response data to UserProgressRecord objects
+        records = []
+        for item in response.data:
+            records.append(UserProgressRecord(
+                user_id=item['user_id'],
+                item_id=item['item_id'],
+                completed=item['completed']
+            ))
+        
+        return records
+    except Exception as e:
+        logger.error(f"Error getting user progress: {str(e)}")
+        raise
+
+async def submit_answer(question_id: str, user_id: str, answer_index: int) -> AnswerResult:
+    """
+    Submit an answer to a quiz question and evaluate it.
+    
+    Args:
+        question_id: The ID of the quiz question
+        user_id: The ID of the user
+        answer_index: The index of the selected answer
+        
+    Returns:
+        AnswerResult: The result of the answer submission
+    """
+    # Find the learning item for this question
+    # In a real implementation, this would query the database
+    
+    # Mock implementation - look through all cached learning paths
+    correct_answer = None
+    explanation = None
+    
+    for learning_path in learning_path_cache.values():
+        for item in learning_path.items:
+            if item.id == question_id and item.type == LearningItemType.QUIZ:
+                correct_answer = item.metadata.get("correct_answer")
+                explanation = item.metadata.get("explanation")
+                break
+        if correct_answer is not None:
+            break
+    
+    # If we couldn't find the question, return a default response
+    if correct_answer is None:
+        return AnswerResult(
+            is_correct=False,
+            correct_answer=0,  # Default
+            explanation="Question not found",
+            user_id=user_id,
+            question_id=question_id,
+            selected_answer=answer_index,
+            timestamp=datetime.now().isoformat()
+        )
+    
+    # Evaluate the answer
+    is_correct = answer_index == correct_answer
+    
+    # Record the result
+    result = AnswerResult(
+        is_correct=is_correct,
+        correct_answer=correct_answer,
+        explanation=explanation or "No explanation available",
+        user_id=user_id,
+        question_id=question_id,
+        selected_answer=answer_index,
+        timestamp=datetime.now().isoformat()
+    )
+    
+    # In a real implementation, we would store this result in the database
+    logger.info(f"User {user_id} answered question {question_id}: {'Correct' if is_correct else 'Incorrect'}")
+    
+    return result 

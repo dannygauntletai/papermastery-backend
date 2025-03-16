@@ -40,10 +40,7 @@ logger = logging.getLogger(__name__)
 
 class ProgressUpdate(BaseModel):
     """Model for updating user progress on an item."""
-    status: str
-    time_spent_seconds: int
-    sprt_log_likelihood_ratio: Optional[float] = 0.0
-    decision: Optional[str] = "in_progress"
+    completed: bool
 
 class AnswerSubmission(BaseModel):
     """Model for submitting an answer to a question."""
@@ -202,12 +199,10 @@ async def record_item_progress(
     Record a user's progress on a learning item.
     """
     try:
-        # No need to check user_id and item_id match since we're using ProgressUpdate
         await record_progress(
             item_id=item_id,
             user_id=user_id,
-            status=progress.status,
-            time_spent_seconds=progress.time_spent_seconds
+            completed=progress.completed
         )
         
         return None
