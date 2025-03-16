@@ -1493,6 +1493,37 @@ async def record_progress(item_id: str, user_id: str, status: str, time_spent_se
     progress_records.append(record)
     logger.info(f"Recorded progress for user {user_id} on item {item_id}: {status}")
 
+async def record_paper_progress(paper_id: str, user_id: str, progress_type: str) -> None:
+    """
+    Record a user's progress on a paper's summary or related papers.
+    
+    Args:
+        paper_id: The ID of the paper
+        user_id: The ID of the user
+        progress_type: The type of progress ('summary' or 'related_papers')
+    """
+    try:
+        # Validate progress_type
+        if progress_type not in ['summary', 'related_papers']:
+            raise ValueError(f"Invalid progress_type: {progress_type}")
+        
+        # Determine which column to update
+        column_name = f"{progress_type}_completed"
+        
+        # Update the paper record in the database
+        response = supabase.table('papers').update({
+            column_name: True
+        }).eq('id', paper_id).execute()
+        
+        if not response.data:
+            logger.warning(f"No paper found with ID {paper_id} when recording {progress_type} progress")
+            return
+        
+        logger.info(f"Recorded {progress_type} progress for user {user_id} on paper {paper_id}")
+    except Exception as e:
+        logger.error(f"Error recording paper progress: {str(e)}")
+        raise
+
 async def get_user_progress(user_id: str, paper_id: Optional[str] = None) -> List[UserProgressRecord]:
     """
     Get a user's progress on learning materials.

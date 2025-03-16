@@ -25,7 +25,8 @@ from app.services.learning_service import (
     get_user_progress,
     submit_answer,
     generate_flashcards,
-    generate_quiz_questions
+    generate_quiz_questions,
+    record_paper_progress
 )
 from app.api.dependencies import get_current_user
 
@@ -47,6 +48,10 @@ class ProgressUpdate(BaseModel):
 class AnswerSubmission(BaseModel):
     """Model for submitting an answer to a question."""
     answer: str
+
+class PaperProgressUpdate(BaseModel):
+    """Model for updating paper progress."""
+    progress_type: str  # 'summary' or 'related_papers'
 
 @router.get("/papers/{paper_id}/learning-path", response_model=LearningPath)
 async def get_paper_learning_path(
@@ -289,4 +294,30 @@ async def get_quiz_questions(
         return await generate_quiz_questions(paper_id)
     except Exception as e:
         logger.error(f"Error getting quiz questions: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error getting quiz questions: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Error getting quiz questions: {str(e)}")
+
+@router.post("/papers/{paper_id}/progress", status_code=204)
+async def update_paper_progress(
+    progress: PaperProgressUpdate,
+    paper_id: str = Path(..., description="The ID of the paper"),
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Record a user's progress on a paper's summary or related papers.
+    
+    Args:
+        progress: The progress update containing the progress type
+        paper_id: The ID of the paper
+        user_id: The ID of the user
+    """
+    try:
+        await record_paper_progress(
+            paper_id,
+            user_id,
+            progress.progress_type
+        )
+        
+        return None
+    except Exception as e:
+        logger.error(f"Error recording paper progress: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error recording paper progress: {str(e)}") 
