@@ -60,8 +60,18 @@ async def extract_text_from_pdf(pdf_path: str) -> str:
             text = ""
             
             for page_num in range(len(pdf_reader.pages)):
-                page = pdf_reader.pages[page_num]
-                text += page.extract_text()
+                try:
+                    page = pdf_reader.pages[page_num]
+                    page_text = page.extract_text()
+                    # Sanitize text immediately to handle problematic characters
+                    if page_text:
+                        # Remove null bytes and other control characters
+                        page_text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', page_text)
+                    text += page_text or ""
+                except Exception as e:
+                    logger.warning(f"Error extracting text from page {page_num} of {pdf_path}: {str(e)}")
+                    # Continue with next page instead of failing completely
+                    continue
                 
         logger.info(f"Extracted text from PDF {pdf_path}")
         
@@ -91,6 +101,9 @@ async def clean_pdf_text(text: str) -> str:
     Returns:
         Cleaned text
     """
+    # Remove null bytes and other control characters that can cause database issues
+    text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
+    
     # Remove multiple consecutive newlines
     text = re.sub(r'\n{3,}', '\n\n', text)
     

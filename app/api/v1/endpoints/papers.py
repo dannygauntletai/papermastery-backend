@@ -563,9 +563,35 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
             "tags": {"status": "completed"}
         }
         
-        await update_paper(paper_id, update_data)
-        
-        logger.info(f"Background processing completed for paper {paper_id}")
+        try:
+            await update_paper(paper_id, update_data)
+            logger.info(f"Background processing completed for paper {paper_id}")
+        except Exception as db_error:
+            logger.error(f"Database error updating paper {paper_id}: {str(db_error)}")
+            
+            # If there's an error with the full text, try to update without it
+            if "full_text" in update_data:
+                logger.warning(f"Attempting to update paper {paper_id} without full text")
+                # Try to update with a truncated or sanitized version of the text
+                try:
+                    # Further sanitize the text by removing any potential problematic characters
+                    import re
+                    sanitized_text = re.sub(r'[^\x20-\x7E\n\r\t]', '', full_text)
+                    # Truncate if still too large
+                    if len(sanitized_text) > 1000000:  # Limit to 1MB
+                        sanitized_text = sanitized_text[:1000000] + "... [truncated]"
+                    
+                    update_data["full_text"] = sanitized_text
+                    await update_paper(paper_id, update_data)
+                    logger.info(f"Successfully updated paper {paper_id} with sanitized text")
+                except Exception as sanitize_error:
+                    logger.error(f"Failed to update paper {paper_id} even with sanitized text: {str(sanitize_error)}")
+                    # Last resort: update without the full text
+                    del update_data["full_text"]
+                    update_data["tags"]["status"] = "partial"
+                    update_data["tags"]["error_message"] = "Could not store full text due to encoding issues"
+                    await update_paper(paper_id, update_data)
+                    logger.warning(f"Updated paper {paper_id} without full text")
         
     except Exception as e:
         logger.error(f"Error processing paper {paper_id} in background: {str(e)}")

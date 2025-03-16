@@ -237,7 +237,7 @@ async def extract_metadata_from_pdf(pdf_content: bytes, source_url: str) -> Pape
             authors = [Author(name="Unknown Author", affiliations=[])]
         
         # Extract abstract
-        abstract = "Abstract not available for direct PDF uploads."
+        abstract = "Unable to extract abstract from PDF"
         if len(pdf_reader.pages) > 0:
             # Try to extract abstract from first page
             first_page_text = pdf_reader.pages[0].extract_text()

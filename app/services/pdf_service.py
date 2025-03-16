@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 from uuid import UUID
 from typing import Optional, Tuple, List, Dict, Any
+import re
 
 from app.core.logger import get_logger
 from app.core.exceptions import PDFDownloadError, InvalidPDFUrlError
@@ -223,7 +224,11 @@ async def download_and_process_paper(source_url: str, paper_id: Optional[UUID] =
         # Clean text
         text = await clean_pdf_text(text)
         
-        logger.info(f"Successfully extracted text from PDF")
+        # Additional sanitization to ensure database compatibility
+        # Remove any remaining problematic characters
+        text = re.sub(r'[^\x20-\x7E\n\r\t]', '', text)
+        
+        logger.info(f"Successfully extracted and sanitized text from PDF")
         
         return text
         
