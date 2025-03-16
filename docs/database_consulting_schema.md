@@ -1,33 +1,3 @@
--- ============================================
--- SQL Script for Consulting System Integration
--- ============================================
-
--- This script updates existing tables and creates new tables
--- to support the consulting system in the ArXiv Mastery Platform.
-
--- ============================================
--- Part 1: Updates to Existing Tables
--- ============================================
-
--- **Update 'papers' table**
--- Adds a reference to researchers for consultation purposes
-ALTER TABLE papers
-ADD COLUMN researcher_id UUID REFERENCES researchers(id) ON DELETE SET NULL;
-
--- **Update 'progress' table**
--- Links progress tracking to consultation sessions
-ALTER TABLE progress
-ADD COLUMN session_id UUID REFERENCES sessions(id) ON DELETE SET NULL;
-
--- **Update 'queries' table**
--- Associates resolved queries with consultation sessions
-ALTER TABLE queries
-ADD COLUMN session_id UUID REFERENCES sessions(id) ON DELETE SET NULL;
-
--- ============================================
--- Part 2: Creation of New Tables
--- ============================================
-
 -- **Table: researchers**
 -- Stores profiles of researchers available for consultations
 CREATE TABLE researchers (
@@ -37,6 +7,7 @@ CREATE TABLE researchers (
     email VARCHAR(255) UNIQUE NOT NULL,
     bio TEXT,
     expertise JSONB,  -- e.g., ["machine learning", "physics"]
+    achievements JSONB,  -- e.g., ["machine learning", "physics"]
     availability JSONB,  -- e.g., {"monday": ["9:00-10:00"], "tuesday": ["14:00-15:00"]}
     rate DECIMAL(10, 2) NOT NULL,  -- Hourly rate (e.g., 50.00)
     verified BOOLEAN DEFAULT FALSE,
