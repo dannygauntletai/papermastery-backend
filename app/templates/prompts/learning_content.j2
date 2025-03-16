@@ -1,0 +1,53 @@
+You are an expert academic researcher and educator. Your task is to analyze a research paper and extract structured learning content that will help students understand the paper at different levels of expertise.
+
+Paper Title: {{ title }}
+
+{% if abstract %}
+Paper Abstract: {{ abstract }}
+{% endif %}
+
+{% if full_text %}
+Full Text of the Paper:
+{{ full_text }}
+{% elif pdf_path %}
+I will provide you with a PDF of the research paper. Please analyze this PDF to extract the required information.
+{% endif %}
+
+Please extract and structure the following learning content from this paper:
+
+1. Methodology: Extract the paper's methodology section, explaining the methods, experimental setup, data collection, or theoretical framework used in the research. This should be several paragraphs long and formatted in markdown with clear headings and sections.
+
+2. Results: Extract the key results or findings from the paper, highlighting the most important outcomes or discoveries. This should be several paragraphs long and formatted in markdown with clear headings and sections.
+
+3. Key Concepts: Identify three fundamental concepts that are essential to understanding this paper. For each concept, provide a one paragraph, beginner-friendly explanation. All explanations should be a few sentences long and formatted in markdown with a clear heading. You must return this in an array. 
+
+Use this JSON Schema:
+
+PaperLearningContent = {
+  "methodology": {
+    "title": "A clear title describing the methodology",
+    "content": "Detailed explanation of the methodology used in the paper"
+  },
+  "results": {
+    "title": "A clear title summarizing the key findings",
+    "content": "Detailed explanation of the results and their significance"
+  },
+  "key_concepts": [
+    {
+      "key_concept": "First key concept name",
+      "explainer": "Beginner-friendly explanation of this concept"
+    },
+    {
+      "key_concept": "Second key concept name",
+      "explainer": "Beginner-friendly explanation of this concept"
+    },
+    {
+      "key_concept": "Third key concept name",
+      "explainer": "Beginner-friendly explanation of this concept"
+    }
+  ]
+}
+Return: PaperLearningContent
+"""
+
+Ensure all content is factually accurate and directly based on the paper's content. The explanations should be clear and accessible while maintaining academic rigor. 

@@ -20,14 +20,18 @@ from app.api.v1.models import (
     CardItem,
     QuestionItem
 )
-from app.services.llm_service import generate_text
+from app.services.llm_service import generate_text, generate_learning_content_json_with_pdf, mock_generate_learning_content_json
+from app.services.pdf_service import get_paper_pdf
+from app.templates.prompts.learning_content import get_learning_content_prompt
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # Learning material types
 MATERIAL_TYPES = {
-    "text": "Explanatory text content",
+    "concepts": "Key concepts from the paper",
+    "methodology": "Methodology explanation",
+    "results": "Results and findings",
     "quiz": "Interactive questions to test understanding",
     "flashcard": "Spaced repetition memory cards",
     "video": "Educational video content"
@@ -614,8 +618,6 @@ async def generate_quiz_questions(paper_id: str) -> List[QuestionItem]:
                                 logger.info("Successfully parsed JSON with aggressive sanitizing")
                             except json.JSONDecodeError as e:
                                 logger.error(f"All JSON parsing attempts failed: {str(e)}")
-                                # If all parsing attempts fail, return mock data
-                                return _get_mock_quiz_questions()
                     
                     # Validate and convert to QuestionItem objects
                     questions = []
@@ -864,6 +866,9 @@ async def generate_learning_path(paper_id: str, user_id: Optional[str] = None, u
         
     Returns:
         LearningPath: A structured learning path with materials for the paper
+        
+    Raises:
+        ValueError: If paper not found or content generation fails
     """
     logger.info(f"Generating learning path for paper {paper_id}")
     
@@ -938,10 +943,10 @@ async def generate_learning_path(paper_id: str, user_id: Optional[str] = None, u
                     learning_item = LearningItem(
                         id=material.get("id"),
                         paper_id=material.get("paper_id"),
-                        type=LearningItemType(material.get("type", "text")),
+                        type=LearningItemType(material.get("type", "concepts")),
                         title=material.get("data", {}).get("title", "Learning Item"),
-                        content=material.get("data", {}).get("description", ""),
-                        metadata={},
+                        content=material.get("data", {}).get("description", material.get("data", {}).get("content", "")),
+                        metadata=material.get("data", {}).get("metadata", {}),
                         difficulty_level=get_difficulty_level(material.get("level", "beginner"))
                     )
                     
@@ -1060,51 +1065,66 @@ async def generate_learning_path(paper_id: str, user_id: Optional[str] = None, u
             # Create learning items from the generated materials
             learning_items: List[LearningItem] = []
             
-            # Add text items for each difficulty level
+            # Generate text content for all difficulty levels at once
+            # This is a critical step - if it fails, we should abort the entire process
+            text_content = await generate_text_content(paper_id)
+            logger.info(f"Generated {len(text_content)} text content items for paper {paper_id}")
+            
+            # Process text content based on difficulty level
+            for content in text_content:
+                # Get the difficulty level from the content
+                level_name = content.get("level", "beginner")
+                level = get_difficulty_level(level_name)
+                content_type = content.get("type", "concepts")
+                
+                # Create a unique ID for the item
+                item_id = f"{paper_id}-{content_type}-{uuid.uuid4().hex[:8]}"
+                
+                # Determine the LearningItemType based on content type
+                if content_type == "concepts":
+                    item_type = LearningItemType.CONCEPTS
+                elif content_type == "methodology":
+                    item_type = LearningItemType.METHODOLOGY
+                elif content_type == "results":
+                    item_type = LearningItemType.RESULTS
+                else:
+                    # Fallback (should not happen)
+                    item_type = LearningItemType.CONCEPTS
+                
+                # Create a learning item
+                learning_item = LearningItem(
+                    id=item_id,
+                    paper_id=paper_id,
+                    type=item_type,
+                    title=content.get("title", "Explanation"),
+                    content=content.get("content", ""),
+                    metadata=content.get("metadata", {}),
+                    difficulty_level=level
+                )
+                
+                learning_items.append(learning_item)
+                
+                # Store the learning item in the database
+                text_material_data = {
+                    "paper_id": paper_id,
+                    "type": content_type,
+                    "level": level_name,
+                    "category": "general",
+                    "data": {
+                        "title": content.get("title", ""),
+                        "content": content.get("content", ""),
+                        "metadata": content.get("metadata", {})
+                    },
+                    "order": order_counter
+                }
+                
+                text_item_id = await store_learning_material(text_material_data, use_mock_for_tests=use_mock_for_tests)
+                stored_item_ids.append(text_item_id)
+                order_counter += 1
+                logger.info(f"Stored {content_type} material with ID {text_item_id} for level {level_name}")
+            
+            # Add additional materials for each difficulty level
             for level, level_name in enumerate(LEVELS, 1):
-                text_item_ids = []
-                
-                # Create text items from paper sections
-                text_content = generate_text_content(paper_id)
-                
-                for i, content in enumerate(text_content):
-                    # Create a unique ID for the item
-                    item_id = f"{paper_id}-text-{level}-{i}"
-                    
-                    # Create a learning item
-                    learning_item = LearningItem(
-                        id=item_id,
-                        paper_id=paper_id,
-                        type=LearningItemType.TEXT,
-                        title=content.get("title", "Explanation"),
-                        content=content.get("content", ""),
-                        metadata={},
-                        difficulty_level=level
-                    )
-                    
-                    learning_items.append(learning_item)
-                    text_item_ids.append(item_id)
-                    
-                    # Store the learning item in the database
-                    text_material_data = {
-                        "paper_id": paper_id,
-                        "type": "text",
-                        "level": level_name,
-                        "category": "general",
-                        "data": {
-                            "title": content.get("title", ""),
-                            "content": content.get("content", "")
-                        },
-                        "order": order_counter
-                    }
-                    
-                    try:
-                        text_item_id = await store_learning_material(text_material_data, use_mock_for_tests=use_mock_for_tests)
-                        stored_item_ids.append(text_item_id)
-                        order_counter += 1
-                    except Exception as e:
-                        logger.error(f"Error storing text material: {str(e)}", exc_info=True)
-                
                 # Add video items (limit to 3 per level)
                 if videos:
                     video_material_data = {
@@ -1238,10 +1258,10 @@ async def generate_learning_path(paper_id: str, user_id: Optional[str] = None, u
             
             # Reload the materials from the database
             existing_materials = await get_materials_for_paper(paper_id, use_mock_for_tests=use_mock_for_tests)
-        
-        # Log the counts of materials stored
-        logger.info(f"Stored {len(stored_item_ids)} learning materials for paper {paper_id}")
-        logger.debug(f"Stored item IDs: {stored_item_ids}")
+            
+            # Log the counts of materials stored
+            logger.info(f"Stored {len(stored_item_ids)} learning materials for paper {paper_id}")
+            logger.debug(f"Stored item IDs: {stored_item_ids}")
     
     # Create the learning path
     learning_path = LearningPath(
@@ -1259,70 +1279,140 @@ async def generate_learning_path(paper_id: str, user_id: Optional[str] = None, u
     
     return learning_path
 
-def generate_text_content(paper_id: str) -> List[Dict[str, Any]]:
-    """Generate explanatory text content for different aspects of the paper"""
-    # This would use OpenAI API in production to generate content
-    # For now, we'll use mock data
-    sections = [
-        {
-            "title": "Introduction to Key Concepts",
-            "content": "This section introduces the fundamental concepts covered in the paper..."
-        },
-        {
-            "title": "Methodology Explained",
-            "content": "The methodology used in this paper involves several key steps..."
-        },
-        {
-            "title": "Results Analysis",
-            "content": "The results of the paper demonstrate significant findings in the field..."
-        }
-    ]
+async def generate_text_content(paper_id: str) -> List[Dict[str, Any]]:
+    """
+    Generate explanatory text content for different aspects of the paper.
     
-    return sections
+    This function uses the LLM to generate structured learning content from the paper's PDF.
+    It organizes content by difficulty level:
+    - Key concepts (beginner level)
+    - Methodology (intermediate level)
+    - Results (advanced level)
+    
+    Args:
+        paper_id: The ID of the paper
+        
+    Returns:
+        List[Dict[str, Any]]: A list of text content items organized by difficulty level
+        
+    Raises:
+        ValueError: If paper not found or PDF not available
+        Exception: If content generation fails
+    """
+    from app.services.llm_service import generate_learning_content_json_with_pdf
+    from app.templates.prompts.learning_content import get_learning_content_prompt
+    from app.services.pdf_service import get_paper_pdf
+    from uuid import UUID
+    
+    # Get the paper details
+    paper = await get_paper_by_id(paper_id)
+    if not paper:
+        logger.error(f"Paper {paper_id} not found")
+        raise ValueError(f"Paper {paper_id} not found")
+    
+    # Get the PDF path
+    pdf_path = await get_paper_pdf(UUID(paper_id))
+    if not pdf_path:
+        logger.error(f"PDF for paper {paper_id} not found")
+        raise ValueError(f"PDF for paper {paper_id} not found")
+    
+    # Generate the prompt
+    title = paper.get("title", "")
+    abstract = paper.get("abstract", "")
+    prompt = get_learning_content_prompt(title=title, abstract=abstract, pdf_path=pdf_path)
+    
+    # Generate content using the LLM
+    content = await generate_learning_content_json_with_pdf(prompt, pdf_path)
+    
+    # Organize content by difficulty level
+    text_content = []
+    
+    # Key concepts (beginner level) - use the array directly
+    if "key_concepts" in content and isinstance(content["key_concepts"], list):
+        # Add as a single learning item with concepts array directly from LLM
+        text_content.append({
+            "title": "Key Concepts",
+            "content": "Key concepts from the paper",
+            "level": "beginner",
+            "type": "concepts",
+            "metadata": {
+                "concepts": content["key_concepts"]
+            }
+        })
+    
+    # Methodology (intermediate level)
+    if "methodology" in content and isinstance(content["methodology"], dict):
+        text_content.append({
+            "title": content["methodology"].get("title", "Methodology Explained"),
+            "content": content["methodology"].get("content", ""),
+            "level": "intermediate",
+            "type": "methodology"
+        })
+    
+    # Results (advanced level)
+    if "results" in content and isinstance(content["results"], dict):
+        text_content.append({
+            "title": content["results"].get("title", "Results Analysis"),
+            "content": content["results"].get("content", ""),
+            "level": "advanced",
+            "type": "results"
+        })
+    
+    if not text_content:
+        logger.error("Failed to generate any text content")
+        raise ValueError("Failed to generate any text content")
+        
+    return text_content
 
 async def get_learning_path(paper_id: str) -> Dict[str, Any]:
     """
     Retrieve an existing learning path or generate a new one if it doesn't exist.
+    
+    Args:
+        paper_id: The ID of the paper
+        
+    Returns:
+        Dict[str, Any]: The learning path data
+        
+    Raises:
+        ValueError: If paper not found or content generation fails
+        Exception: If there's an error retrieving or generating the learning path
     """
     logger.info(f"Getting learning path for paper {paper_id}")
     
-    try:
-        # Check if materials already exist for this paper
-        existing_materials = await get_materials_for_paper(paper_id)
+    # Check if materials already exist for this paper
+    existing_materials = await get_materials_for_paper(paper_id)
+    
+    if existing_materials:
+        logger.info(f"Found {len(existing_materials)} existing materials for paper {paper_id}")
         
-        if existing_materials:
-            logger.info(f"Found {len(existing_materials)} existing materials for paper {paper_id}")
+        # Calculate total estimated time
+        total_time = 0
+        for material in existing_materials:
+            if material["type"] == "text" or material["type"] == "concepts" or material["type"] == "methodology" or material["type"] == "results":
+                total_time += 10  # Estimate 10 minutes for reading
+            elif material["type"] == "flashcard":
+                total_time += len(material.get("data", {}).get("cards", [])) * 2  # 2 minutes per card
+            elif material["type"] == "quiz":
+                total_time += len(material.get("data", {}).get("questions", [])) * 3  # 3 minutes per question
             
-            # Calculate total estimated time
-            total_time = 0
-            for material in existing_materials:
-                if material["type"] == "text":
-                    total_time += 10  # Estimate 10 minutes for reading
-                elif material["type"] == "flashcard":
-                    total_time += len(material.get("data", {}).get("cards", [])) * 2  # 2 minutes per card
-                elif material["type"] == "quiz":
-                    total_time += len(material.get("data", {}).get("questions", [])) * 3  # 3 minutes per question
-                
-                # Add video times if available
-                if material.get("videos"):
-                    for video in material.get("videos", []):
-                        duration = video.get("duration", "10:00")
-                        mins, secs = map(int, duration.split(":"))
-                        total_time += mins * 60 + secs
-            
-            return {
-                "paper_id": paper_id,
-                "materials": existing_materials,
-                "estimated_total_time_minutes": total_time,
-                "last_modified": existing_materials[0].get("created_at", datetime.now().isoformat()) if existing_materials else datetime.now().isoformat()
-            }
-        else:
-            logger.info(f"No learning materials found for paper {paper_id}, generating new learning path")
-            return await generate_learning_path(paper_id)
-            
-    except Exception as e:
-        logger.error(f"Error getting learning path: {str(e)}")
-        raise
+            # Add video times if available
+            if material.get("videos"):
+                for video in material.get("videos", []):
+                    duration = video.get("duration", "10:00")
+                    mins, secs = map(int, duration.split(":"))
+                    total_time += mins * 60 + secs
+        
+        return {
+            "paper_id": paper_id,
+            "materials": existing_materials,
+            "estimated_total_time_minutes": total_time,
+            "last_modified": existing_materials[0].get("created_at", datetime.now().isoformat()) if existing_materials else datetime.now().isoformat()
+        }
+    else:
+        logger.info(f"No learning materials found for paper {paper_id}, generating new learning path")
+        # This will raise an exception if generation fails
+        return await generate_learning_path(paper_id)
 
 async def record_user_progress(user_id: str, item_id: str, status: str, 
                              sprt_log_likelihood_ratio: float = 0.0, 

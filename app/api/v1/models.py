@@ -131,7 +131,9 @@ class QuestionItem(BaseModel):
 # API models for learning materials
 class LearningItemType(str, Enum):
     """Enum for learning item types."""
-    TEXT = "text"
+    CONCEPTS = "concepts"
+    METHODOLOGY = "methodology"
+    RESULTS = "results"
     VIDEO = "video"
     FLASHCARD = "flashcard"
     QUIZ = "quiz"
