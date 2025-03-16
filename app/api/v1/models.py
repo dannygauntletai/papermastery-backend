@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, HttpUrl, validator
 import re
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Union
 from datetime import datetime
 from uuid import UUID
 from enum import Enum
@@ -9,19 +9,47 @@ class SourceType(str, Enum):
     """Enum for paper source types."""
     ARXIV = "arxiv"
     PDF = "pdf"
+    FILE = "file"
 
 class PaperSubmission(BaseModel):
     """Model for submitting a paper."""
-    source_url: HttpUrl = Field(..., description="URL to the paper (arXiv or PDF)")
+    source_url: Optional[HttpUrl] = Field(None, description="URL to the paper (arXiv or PDF)")
     source_type: Optional[SourceType] = None
+    file_content: Optional[bytes] = Field(None, description="Binary content of the uploaded PDF file")
+    file_name: Optional[str] = Field(None, description="Name of the uploaded PDF file")
     
     @validator('source_url')
     @classmethod
-    def validate_source_url(cls, v):
-        """Validate that the URL is a valid URL."""
-        # Convert to string for regex matching
-        v_str = str(v)
+    def validate_source_url(cls, v, values):
+        """Validate that the URL is a valid URL if provided."""
+        # If source_type is FILE, source_url is not required
+        if values.get('source_type') == SourceType.FILE and v is None:
+            return v
+            
+        # For other source types, source_url is required
+        if v is None and values.get('source_type') != SourceType.FILE:
+            raise ValueError("source_url is required for non-file uploads")
+            
         # Basic URL validation is handled by HttpUrl type
+        return v
+        
+    @validator('file_content')
+    @classmethod
+    def validate_file_content(cls, v, values):
+        """Validate that file_content is provided for file uploads."""
+        if values.get('source_type') == SourceType.FILE and v is None:
+            raise ValueError("file_content is required for file uploads")
+        return v
+        
+    @validator('file_name')
+    @classmethod
+    def validate_file_name(cls, v, values):
+        """Validate that file_name is provided for file uploads and has a .pdf extension."""
+        if values.get('source_type') == SourceType.FILE:
+            if v is None:
+                raise ValueError("file_name is required for file uploads")
+            if not v.lower().endswith('.pdf'):
+                raise ValueError("Only PDF files are supported")
         return v
 
 class Author(BaseModel):

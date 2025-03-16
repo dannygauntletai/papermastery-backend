@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks, Query, Request
-from typing import List, Optional, Dict, Any
+from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks, Query, Request, File, Form, UploadFile, Body
+from typing import List, Optional, Dict, Any, Union
 from uuid import UUID
 import uuid
+import json
 
 from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary, SourceType
 from app.core.logger import get_logger
@@ -28,6 +29,8 @@ from app.services.summarization_service import generate_summaries
 from app.services.learning_service import generate_learning_path
 from app.dependencies import validate_environment, get_current_user
 from app.core.exceptions import InvalidPDFUrlError
+from app.services.storage_service import upload_file_to_storage, get_file_url
+from app.core.exceptions import StorageError
 
 logger = get_logger(__name__)
 
@@ -41,11 +44,10 @@ router = APIRouter(
 
 @router.post("/submit", response_model=PaperResponse, status_code=status.HTTP_202_ACCEPTED)
 async def submit_paper(
-    paper_submission: PaperSubmission,
+    request: Request,
     background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
-    # args: Optional[str] = Query(None, description="Not required"),
-    # kwargs: Optional[str] = Query(None, description="Not required")
+    file: Optional[UploadFile] = File(None),
 ):
     """
     Submit a paper for processing.
@@ -53,27 +55,101 @@ async def submit_paper(
     The submission is accepted immediately, and processing happens in the background.
     Check the status of the paper by retrieving it with GET /papers/{id}.
     
+    Supports both JSON and multipart/form-data requests:
+    - For JSON: Send a JSON object with source_url and source_type
+    - For form data: Send file, source_url, and source_type as form fields
+    
     Args:
-        paper_submission: The submission request containing the paper URL
+        request: The FastAPI request object
+        file: The PDF file (for file uploads)
         background_tasks: FastAPI background tasks
         user_id: The ID of the authenticated user
-        # args: Optional arguments (system use only)
-        # kwargs: Optional keyword arguments (system use only)
         
     Returns:
         The paper data with processing status
     """
-    source_url = str(paper_submission.source_url)
-    logger.info(f"Received paper submission from user {user_id}: {source_url}")
+    logger.info(f"Received paper submission from user {user_id}")
     
-    # Detect URL type
-    try:
-        source_type = paper_submission.source_type or await detect_url_type(source_url)
-    except InvalidPDFUrlError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"URL does not point to a valid PDF: {source_url}"
-        )
+    # Determine if this is a JSON request or a form data request
+    content_type = request.headers.get("content-type", "")
+    
+    # Handle JSON request
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+            source_url = body.get("source_url")
+            source_type = body.get("source_type")
+            
+            if not source_url:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="source_url is required for JSON requests"
+                )
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid JSON body"
+            )
+    # Handle form data request
+    else:
+        form = await request.form()
+        source_url = form.get("source_url")
+        source_type = form.get("source_type")
+        file = form.get("file")
+    
+    # Handle file uploads
+    if file:
+        source_type = SourceType.FILE
+        file_name = file.filename
+        file_content = await file.read()
+        
+        logger.info(f"Received file upload from user {user_id}: {file_name}")
+        
+        try:
+            # Upload file to Supabase storage
+            file_path = await upload_file_to_storage(
+                file_content,
+                file_name
+            )
+            
+            # Generate the public URL
+            source_url = await get_file_url(file_path)
+            logger.info(f"File uploaded to storage: {source_url}")
+            
+        except StorageError as e:
+            logger.error(f"Error uploading file: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error uploading file: {str(e)}"
+            )
+    else:
+        # Handle URL submissions
+        if not source_url:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Source URL is required for non-file submissions"
+            )
+            
+        logger.info(f"Received paper submission from user {user_id}: {source_url}")
+        
+        # Convert string source_type to enum if needed
+        if isinstance(source_type, str):
+            if source_type.lower() == "arxiv":
+                source_type = SourceType.ARXIV
+            elif source_type.lower() == "pdf":
+                source_type = SourceType.PDF
+            elif source_type.lower() == "file":
+                source_type = SourceType.FILE
+        
+        # Detect URL type if not provided
+        try:
+            if not source_type or source_type not in [SourceType.ARXIV, SourceType.PDF]:
+                source_type = await detect_url_type(source_url)
+        except InvalidPDFUrlError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"URL does not point to a valid PDF: {source_url}"
+            )
     
     # Check if paper already exists
     existing_paper = None

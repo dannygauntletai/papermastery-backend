@@ -29,44 +29,44 @@ async def download_pdf(url: str, force_download: bool = False) -> Tuple[str, boo
         force_download: Whether to force a re-download even if the PDF is cached
         
     Returns:
-        Tuple containing (path to the PDF file, whether it was newly downloaded)
+        Tuple containing the path to the downloaded PDF and a boolean indicating if it's a new download
         
     Raises:
         PDFDownloadError: If there's an error downloading the PDF
-        InvalidPDFUrlError: If the URL does not point to a PDF
     """
-    # Generate a unique filename based on the URL
-    url_hash = hashlib.md5(url.encode()).hexdigest()
-    cache_path = PDF_CACHE_DIR / f"{url_hash}.pdf"
-    
-    # Check if the PDF is already cached
-    if cache_path.exists() and not force_download:
-        logger.info(f"Using cached PDF for URL: {url}")
-        return str(cache_path.absolute()), False
-    
     try:
+        # Generate a cache filename based on the URL
+        url_hash = hashlib.md5(url.encode()).hexdigest()
+        cache_path = PDF_CACHE_DIR / f"{url_hash}.pdf"
+        
+        # Check if the file is already cached
+        if cache_path.exists() and not force_download:
+            logger.info(f"Using cached PDF for URL: {url}")
+            return str(cache_path), False
+        
         # Download the PDF
         logger.info(f"Downloading PDF from URL: {url}")
+        
         async with httpx.AsyncClient() as client:
-            response = await client.get(url, follow_redirects=True)
+            response = await client.get(url, follow_redirects=True, timeout=60.0)
             
             if response.status_code != 200:
                 raise PDFDownloadError(f"Failed to download PDF: HTTP {response.status_code}")
             
             # Check content type
             content_type = response.headers.get('content-type', '').lower()
-            if 'application/pdf' not in content_type:
-                raise InvalidPDFUrlError(url)
+            if 'application/pdf' not in content_type and not url.endswith('.pdf') and '/storage/v1/object/public/' not in url:
+                raise InvalidPDFUrlError(f"URL does not point to a PDF: {url}")
             
             # Save the PDF to the cache
-            with open(cache_path, "wb") as f:
+            with open(cache_path, 'wb') as f:
                 f.write(response.content)
             
-            logger.info(f"PDF downloaded and cached at: {cache_path}")
-            return str(cache_path.absolute()), True
+            logger.info(f"Successfully downloaded PDF to {cache_path}")
+            return str(cache_path), True
             
-    except httpx.RequestError as e:
-        logger.error(f"Error downloading PDF from URL {url}: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error downloading PDF from {url}: {str(e)}")
         raise PDFDownloadError(f"Error downloading PDF: {str(e)}")
 
 async def download_arxiv_pdf(arxiv_id: str, force_download: bool = False) -> Tuple[str, bool]:
@@ -160,54 +160,42 @@ async def get_paper_pdf(paper_id: UUID) -> Optional[str]:
         logger.error(f"Error getting PDF for paper with ID {paper_id}: {str(e)}")
         raise PDFDownloadError(f"Error getting PDF for paper with ID {paper_id}: {str(e)}")
 
-async def download_and_process_paper(url: str, paper_id: Optional[UUID] = None, source_type: str = SourceType.PDF) -> Tuple[str, List[Dict[str, Any]]]:
+async def download_and_process_paper(source_url: str, paper_id: Optional[UUID] = None, source_type: str = SourceType.ARXIV) -> Tuple[str, List[Dict[str, Any]]]:
     """
-    Download and process a paper from any URL.
+    Download and process a paper from any source.
     
     This function:
-    1. Downloads the PDF from the URL
+    1. Downloads the PDF from the source URL
     2. Extracts text from the PDF
     3. Processes it using LangChain (if available) or fallback to basic processing
     4. Breaks it into logical chunks with metadata
     
     Args:
-        url: The URL to the PDF
+        source_url: The URL to the paper
         paper_id: Optional UUID of the paper in the database
-        source_type: The type of source ("arxiv" or "pdf")
+        source_type: The type of source ("arxiv", "pdf", or "file")
         
     Returns:
         Tuple containing full text and a list of text chunks with metadata
         
     Raises:
-        PDFDownloadError: If there's an error downloading the PDF
-        InvalidPDFUrlError: If the URL does not point to a PDF
+        PDFDownloadError: If there's an error downloading or processing the PDF
     """
     try:
-        logger.info(f"Downloading PDF for URL: {url}")
+        logger.info(f"Processing paper from {source_type} source: {source_url}")
         
         # Download PDF
-        if source_type == SourceType.ARXIV:
-            # Extract arXiv ID from URL
-            from app.services.url_service import extract_arxiv_id_from_url
-            arxiv_id = await extract_arxiv_id_from_url(url)
-            if not arxiv_id:
-                raise InvalidPDFUrlError(url)
-            pdf_path, _ = await download_arxiv_pdf(arxiv_id)
-        else:
-            pdf_path, _ = await download_pdf(url)
+        pdf_path, is_new = await download_pdf(source_url)
         
         # Always try processing with LangChain first
         try:
-            logger.info(f"Processing PDF with LangChain for URL: {url}")
-            formatted_chunks, langchain_chunks = await process_pdf_with_langchain(
-                pdf_path, 
-                paper_id or UUID('00000000-0000-0000-0000-000000000000')
-            )
+            logger.info(f"Processing PDF with LangChain for paper ID: {paper_id}")
+            formatted_chunks, langchain_chunks = await process_pdf_with_langchain(pdf_path, paper_id or UUID('00000000-0000-0000-0000-000000000000'))
             
             # Combine all text for full text
             full_text = "\n\n".join([chunk.get("text", "") for chunk in formatted_chunks])
             
-            logger.info(f"Successfully processed PDF with LangChain for URL: {url}")
+            logger.info(f"Successfully processed PDF with LangChain")
             return full_text, formatted_chunks
                 
         except Exception as langchain_error:
@@ -221,22 +209,19 @@ async def download_and_process_paper(url: str, paper_id: Optional[UUID] = None, 
         # Clean text
         text = await clean_pdf_text(text)
         
-        # Basic chunking (simplified)
-        chunks = []
-        paragraphs = text.split("\n\n")
-        for i, paragraph in enumerate(paragraphs):
-            if paragraph.strip():
-                chunks.append({
-                    "text": paragraph,
-                    "metadata": {
-                        "chunk_index": i,
-                        "paper_id": str(paper_id) if paper_id else "unknown"
-                    }
-                })
+        # Break into chunks using chunk_service
+        from app.services.chunk_service import chunk_text
+        chunks_with_metadata = await chunk_text(
+            text=text,
+            paper_id=paper_id or UUID('00000000-0000-0000-0000-000000000000'),
+            max_chunk_size=1000,
+            overlap=100
+        )
         
-        logger.info(f"Fallback processing completed for URL: {url}")
-        return text, chunks
+        logger.info(f"Successfully processed PDF using basic processing")
+        
+        return text, chunks_with_metadata
         
     except Exception as e:
-        logger.error(f"Error processing PDF from URL {url}: {str(e)}")
+        logger.error(f"Error processing PDF for source {source_url}: {str(e)}")
         raise PDFDownloadError(f"Error processing PDF: {str(e)}") 

@@ -69,6 +69,12 @@ class ProcessingError(ArXivMasteryException):
     """Exception raised for errors in processing papers."""
     pass
 
+class StorageError(ArXivMasteryException):
+    """Raised when there is an error with Supabase storage operations."""
+    def __init__(self, message: str):
+        self.message = f"Storage error: {message}"
+        super().__init__(self.message)
+
 # HTTP Exception Handlers
 def http_exception_handler(exc):
     """Convert ArXiv Mastery exceptions to appropriate HTTP exceptions."""
@@ -116,6 +122,11 @@ def http_exception_handler(exc):
         return HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error processing paper"
+        )
+    elif isinstance(exc, StorageError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=exc.message
         )
     else:
         return HTTPException(
