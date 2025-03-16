@@ -249,7 +249,7 @@ async def submit_paper(
     paper_data = {
         "title": paper_metadata.title,
         "authors": [{"name": author.name, "affiliations": author.affiliations} for author in paper_metadata.authors],
-        "abstract": paper_metadata.abstract,
+        "abstract": '',  # Set abstract to None initially, will be extracted during processing
         "publication_date": paper_metadata.publication_date.isoformat(),
         "summaries": None,
         "embedding_id": None,
@@ -546,17 +546,19 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
         # Generate summaries for the paper
         from app.services.summarization_service import generate_summaries
         try:
-            logger.info(f"Generating summaries for paper {paper_id}")
-            summaries = await generate_summaries(
+            logger.info(f"Generating summaries and extracting abstract for paper {paper_id}")
+            summaries, extracted_abstract = await generate_summaries(
                 paper_id=paper_id,
                 title=paper.get("title", ""),
-                abstract=paper.get("abstract", ""),
-                full_text=full_text
+                abstract=paper.get("abstract"),  # Pass the existing abstract, which might be None
+                full_text=full_text,
+                extract_abstract=True  # Enable abstract extraction
             )
-            logger.info(f"Successfully generated summaries for paper {paper_id}")
+            logger.info(f"Successfully generated summaries and extracted abstract for paper {paper_id}")
         except Exception as summary_error:
-            logger.error(f"Error generating summaries for paper {paper_id}: {str(summary_error)}")
+            logger.error(f"Error generating summaries and extracting abstract for paper {paper_id}: {str(summary_error)}")
             summaries = None
+            extracted_abstract = None
         
         # Find related papers
         related_papers = []
@@ -581,6 +583,10 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
             "related_papers": related_papers,
             "tags": {"status": "completed"}
         }
+        
+        # Add extracted abstract to update data if available
+        if extracted_abstract:
+            update_data["abstract"] = extracted_abstract
         
         # Add summaries to update data if available
         if summaries:

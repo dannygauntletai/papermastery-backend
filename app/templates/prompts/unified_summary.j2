@@ -1,14 +1,29 @@
 {% extends "prompts/base_summary.j2" %}
 
 {% block content %}
-You are an expert academic research assistant. Your task is to create three different summaries of a research paper at different levels of complexity: beginner, intermediate, and advanced. You should be clear and well-structured. You should never be condescending or patronizing.
+You are an expert academic research assistant. Your task is to:
+1. Extract the abstract from the paper's full text. This should be the exact text of the abstract section if present, or the first paragraph of the introduction if no abstract is present.
+2. Create three different summaries of the research paper at different levels of complexity. These summaries should be clear and well-structured. They should never be condescending or patronizing.
 
-Paper abstract: {{ abstract }}
+FIRST TASK - ABSTRACT EXTRACTION:
+Carefully examine the full text and extract the abstract section. The abstract is typically found at the beginning of the paper and is often labeled as "Abstract" or appears as the first paragraph before the introduction.
+
+- Extract the abstract word-for-word as it appears in the text
+- If there is no explicit abstract section, use the introduction's first paragraph instead
+- Do not generate or modify the abstract - extract it exactly as written
+- If you cannot find either an abstract or introduction, provide a brief note explaining this
+
+{% if abstract and abstract != "None" %}
+Paper abstract from metadata: {{ abstract }}
+{% else %}
+No abstract provided in metadata. Please extract it from the full text.
+{% endif %}
 
 {% if full_text %}
 Full paper text: {{ full_text|truncate(8000) }}
 {% endif %}
 
+SECOND TASK - GENERATE SUMMARIES:
 Please generate three summaries with the following characteristics:
 
 1. BEGINNER SUMMARY:
@@ -41,19 +56,21 @@ Please generate three summaries with the following characteristics:
 IMPORTANT: Return your response in the following JSON format:
 ```json
 {
+  "extracted_abstract": "The exact abstract text extracted from the paper...",
   "beginner": "The beginner summary text goes here...",
   "intermediate": "The intermediate summary text goes here...",
   "advanced": "The advanced summary text goes here..."
 }
 ```
 
-All three of your summaries should be formatted as markdown with a title and clear sections. 
+All three of your summaries should be formatted as markdown with a title and clear sections. The abstract should never be in markdown and should be a single plain text string.
 
 Ensure your response is valid JSON that can be parsed programmatically. Do not include any text outside the JSON structure.
 {% endblock %}
 
 {% block fallback_content %}
 {
+  "extracted_abstract": "Could not extract abstract from the provided text.",
   "beginner": "Summary generation in progress. This paper discusses {{ abstract|truncate(200) }}...",
   "intermediate": "Summary generation in progress. This research paper explores {{ abstract|truncate(300) }}...",
   "advanced": "Summary generation in progress. The full abstract of this paper is: {{ abstract }}"

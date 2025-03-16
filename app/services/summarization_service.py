@@ -1,4 +1,4 @@
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 import asyncio
 from uuid import UUID
 import os.path
@@ -20,19 +20,23 @@ async def generate_summaries(
     paper_id: UUID,
     title: str,
     abstract: str,
-    full_text: str
-) -> PaperSummary:
+    full_text: str,
+    extract_abstract: bool = False
+) -> Tuple[PaperSummary, str]:
     """
-    Generate tiered summaries (beginner, intermediate, advanced) for a paper.
+    Generate tiered summaries (beginner, intermediate, advanced) for a paper and optionally extract the abstract.
     
     Args:
         paper_id: The UUID of the paper
         title: The title of the paper
-        abstract: The paper's abstract
+        abstract: The paper's abstract (can be None if extract_abstract is True)
         full_text: The full text of the paper
+        extract_abstract: Whether to extract the abstract from the full text
         
     Returns:
-        PaperSummary object with beginner, intermediate, and advanced summaries
+        Tuple containing:
+        - PaperSummary object with beginner, intermediate, and advanced summaries
+        - Extracted abstract string (if extract_abstract is True, otherwise the original abstract)
     """
     try:
         logger.info(f"Generating summaries for paper ID: {paper_id}")
@@ -48,19 +52,25 @@ async def generate_summaries(
         
         # Generate summaries using the appropriate function based on environment
         if APP_ENV == "testing":
-            summaries_dict = await mock_generate_summary_json(prompt, max_tokens=2500, temperature=0.3)
+            result_dict = await mock_generate_summary_json(prompt, max_tokens=2500, temperature=0.3)
         else:
-            summaries_dict = await generate_summary_json(prompt, max_tokens=2500, temperature=0.3)
+            result_dict = await generate_summary_json(prompt, max_tokens=2500, temperature=0.3)
         
         # Create PaperSummary object from the generated summaries
         summaries = PaperSummary(
-            beginner=summaries_dict["beginner"],
-            intermediate=summaries_dict["intermediate"],
-            advanced=summaries_dict["advanced"]
+            beginner=result_dict["beginner"],
+            intermediate=result_dict["intermediate"],
+            advanced=result_dict["advanced"]
         )
         
+        # Get the extracted abstract if requested
+        extracted_abstract = result_dict.get("extracted_abstract", abstract) if extract_abstract else abstract
+        
         logger.info(f"Successfully generated summaries for paper ID: {paper_id}")
-        return summaries
+        if extract_abstract:
+            logger.info(f"Successfully extracted abstract for paper ID: {paper_id}")
+        
+        return summaries, extracted_abstract
         
     except Exception as e:
         logger.error(f"Error generating summaries for paper ID {paper_id}: {str(e)}")
@@ -76,15 +86,19 @@ async def generate_summaries(
             # Try to parse the fallback content as JSON
             import json
             fallback_dict = json.loads(fallback_content)
-            return PaperSummary(
+            summaries = PaperSummary(
                 beginner=fallback_dict["beginner"],
                 intermediate=fallback_dict["intermediate"],
                 advanced=fallback_dict["advanced"]
             )
+            extracted_abstract = fallback_dict.get("extracted_abstract", abstract) if extract_abstract else abstract
         except Exception:
             # If parsing fails, use a simple fallback
-            return PaperSummary(
-                beginner=f"Summary generation in progress. Abstract: {abstract[:200]}...",
-                intermediate=f"Summary generation in progress. Abstract: {abstract[:300]}...",
-                advanced=f"Summary generation in progress. Abstract: {abstract}"
-            ) 
+            summaries = PaperSummary(
+                beginner=f"Summary generation in progress. Abstract: {abstract[:200] if abstract else 'Not available'}...",
+                intermediate=f"Summary generation in progress. Abstract: {abstract[:300] if abstract else 'Not available'}...",
+                advanced=f"Summary generation in progress. Abstract: {abstract if abstract else 'Not available'}"
+            )
+            extracted_abstract = abstract
+            
+        return summaries, extracted_abstract 

@@ -628,21 +628,21 @@ async def generate_summary_json(
     temperature: float = 0.3
 ) -> Dict[str, str]:
     """
-    Generate a JSON response containing paper summaries using a Large Language Model.
+    Generate a JSON response containing paper summaries and extracted abstract using a Large Language Model.
     
     Args:
-        prompt: The prompt to generate summaries
+        prompt: The prompt to generate summaries and extract abstract
         max_tokens: Maximum tokens to generate
         temperature: Controls randomness (0.0-1.0)
         
     Returns:
-        Dictionary containing the generated summaries (beginner, intermediate, advanced)
+        Dictionary containing the extracted abstract and generated summaries (beginner, intermediate, advanced)
         
     Raises:
         LLMServiceError: If an error occurs while generating or parsing the JSON
     """
     try:
-        logger.info("Generating paper summaries in JSON format")
+        logger.info("Generating paper summaries and extracting abstract in JSON format")
         
         # Generate the text response
         response_text = await generate_text(prompt, max_tokens, temperature)
@@ -650,7 +650,7 @@ async def generate_summary_json(
         # Extract JSON from the response
         # First, try to parse the entire response as JSON
         try:
-            summaries = json.loads(response_text)
+            result = json.loads(response_text)
             logger.info("Successfully parsed JSON response")
         except json.JSONDecodeError:
             # If that fails, try to extract JSON from markdown code blocks
@@ -659,7 +659,7 @@ async def generate_summary_json(
             
             if json_match:
                 try:
-                    summaries = json.loads(json_match.group(1))
+                    result = json.loads(json_match.group(1))
                     logger.info("Successfully extracted and parsed JSON from code block")
                 except json.JSONDecodeError:
                     raise LLMServiceError("Failed to parse extracted JSON from code block")
@@ -670,7 +670,7 @@ async def generate_summary_json(
                 
                 if json_match:
                     try:
-                        summaries = json.loads(json_match.group(0))
+                        result = json.loads(json_match.group(0))
                         logger.info("Successfully extracted and parsed JSON object")
                     except json.JSONDecodeError:
                         raise LLMServiceError("Failed to parse extracted JSON object")
@@ -678,15 +678,21 @@ async def generate_summary_json(
                     raise LLMServiceError("No JSON found in the response")
         
         # Validate that the required keys are present
-        required_keys = ["beginner", "intermediate", "advanced"]
-        missing_keys = [key for key in required_keys if key not in summaries]
+        required_keys = ["beginner", "intermediate", "advanced", "extracted_abstract"]
+        missing_keys = [key for key in required_keys if key not in result]
         
         if missing_keys:
             logger.error(f"Missing required keys in JSON response: {missing_keys}")
-            raise LLMServiceError(f"Missing required keys in JSON response: {missing_keys}")
+            
+            # If only missing extracted_abstract, add a placeholder
+            if missing_keys == ["extracted_abstract"]:
+                logger.warning("Adding placeholder for missing extracted_abstract")
+                result["extracted_abstract"] = "Abstract extraction failed"
+            else:
+                raise LLMServiceError(f"Missing required keys in JSON response: {missing_keys}")
         
-        logger.info("Successfully generated and parsed summaries in JSON format")
-        return summaries
+        logger.info("Successfully generated and parsed summaries and abstract in JSON format")
+        return result
         
     except Exception as e:
         logger.error(f"Error generating summary JSON: {str(e)}")
@@ -698,7 +704,7 @@ async def mock_generate_summary_json(
     temperature: float = 0.3
 ) -> Dict[str, str]:
     """
-    Generate a mock JSON response containing paper summaries for testing.
+    Generate a mock JSON response containing paper summaries and extracted abstract for testing.
     
     Args:
         prompt: The prompt to generate summaries
@@ -706,7 +712,7 @@ async def mock_generate_summary_json(
         temperature: Controls randomness (ignored in mock)
         
     Returns:
-        Dictionary containing the generated summaries (beginner, intermediate, advanced)
+        Dictionary containing the extracted abstract and generated summaries (beginner, intermediate, advanced)
     """
     # Extract the abstract from the prompt
     abstract_match = re.search(r'Paper abstract: (.*?)(?:\n\n|\Z)', prompt, re.DOTALL)
@@ -714,6 +720,7 @@ async def mock_generate_summary_json(
     
     # Create mock summaries
     return {
+        "extracted_abstract": f"This is a mock extracted abstract for testing purposes. Original abstract: {abstract[:100]}...",
         "beginner": f"This is a mock beginner summary based on: {abstract[:100]}...",
         "intermediate": f"This is a mock intermediate summary that provides more details about: {abstract[:150]}...",
         "advanced": f"This is a mock advanced summary with technical depth covering: {abstract[:200]}..."
