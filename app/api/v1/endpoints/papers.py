@@ -508,8 +508,9 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
     
     This function:
     1. Downloads and extracts text from the paper
-    2. Finds related papers (for arXiv papers)
-    3. Updates the paper in the database
+    2. Generates summaries for the paper
+    3. Finds related papers (for arXiv papers)
+    4. Updates the paper in the database
     
     Args:
         source_url: The URL to the paper (Supabase storage URL for uploaded files)
@@ -522,11 +523,16 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
         # Update status to processing
         await update_paper(paper_id, {"tags": {"status": "processing"}})
         
+        # Get the paper from the database to access title and abstract
+        paper = await get_paper_by_id(paper_id)
+        if not paper:
+            logger.error(f"Paper with ID {paper_id} not found in database")
+            await update_paper(paper_id, {"tags": {"status": "error", "error_message": "Paper not found in database"}})
+            return
+            
         # For arXiv papers, we need to get the original arXiv URL for metadata
         original_arxiv_url = None
         if source_type == SourceType.ARXIV:
-            # Get the paper from the database to check if it has an arXiv ID
-            paper = await get_paper_by_id(paper_id)
             if paper and paper.get("arxiv_id"):
                 # Construct the arXiv URL from the ID
                 arxiv_id = paper.get("arxiv_id")
@@ -537,13 +543,26 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
         # Use the storage URL for downloading the PDF
         full_text = await download_and_process_paper(source_url, paper_id, source_type)
         
+        # Generate summaries for the paper
+        from app.services.summarization_service import generate_summaries
+        try:
+            logger.info(f"Generating summaries for paper {paper_id}")
+            summaries = await generate_summaries(
+                paper_id=paper_id,
+                title=paper.get("title", ""),
+                abstract=paper.get("abstract", ""),
+                full_text=full_text
+            )
+            logger.info(f"Successfully generated summaries for paper {paper_id}")
+        except Exception as summary_error:
+            logger.error(f"Error generating summaries for paper {paper_id}: {str(summary_error)}")
+            summaries = None
+        
         # Find related papers
         related_papers = []
         if source_type == SourceType.ARXIV:
             try:
                 arxiv_id = None
-                # Get the paper from the database
-                paper = await get_paper_by_id(paper_id)
                 if paper and paper.get("arxiv_id"):
                     arxiv_id = paper.get("arxiv_id")
                 else:
@@ -562,6 +581,15 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
             "related_papers": related_papers,
             "tags": {"status": "completed"}
         }
+        
+        # Add summaries to update data if available
+        if summaries:
+            # Convert PaperSummary object to a dictionary for JSON serialization
+            update_data["summaries"] = {
+                "beginner": summaries.beginner,
+                "intermediate": summaries.intermediate,
+                "advanced": summaries.advanced
+            }
         
         try:
             await update_paper(paper_id, update_data)

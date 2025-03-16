@@ -8,6 +8,7 @@ from openai import OpenAI, AsyncOpenAI
 import google.generativeai as genai
 from dotenv import load_dotenv
 from pathlib import Path
+import re
 
 # Load environment variables from .env file
 load_dotenv()
@@ -620,3 +621,100 @@ This research provides empirical validation for the architectural advantages of 
     else:
         # Default fallback response
         return "Generated text for your query about " + prompt[:50] + "..." 
+
+async def generate_summary_json(
+    prompt: str,
+    max_tokens: int = 2500,
+    temperature: float = 0.3
+) -> Dict[str, str]:
+    """
+    Generate a JSON response containing paper summaries using a Large Language Model.
+    
+    Args:
+        prompt: The prompt to generate summaries
+        max_tokens: Maximum tokens to generate
+        temperature: Controls randomness (0.0-1.0)
+        
+    Returns:
+        Dictionary containing the generated summaries (beginner, intermediate, advanced)
+        
+    Raises:
+        LLMServiceError: If an error occurs while generating or parsing the JSON
+    """
+    try:
+        logger.info("Generating paper summaries in JSON format")
+        
+        # Generate the text response
+        response_text = await generate_text(prompt, max_tokens, temperature)
+        
+        # Extract JSON from the response
+        # First, try to parse the entire response as JSON
+        try:
+            summaries = json.loads(response_text)
+            logger.info("Successfully parsed JSON response")
+        except json.JSONDecodeError:
+            # If that fails, try to extract JSON from markdown code blocks
+            logger.warning("Failed to parse entire response as JSON, trying to extract JSON from code blocks")
+            json_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', response_text)
+            
+            if json_match:
+                try:
+                    summaries = json.loads(json_match.group(1))
+                    logger.info("Successfully extracted and parsed JSON from code block")
+                except json.JSONDecodeError:
+                    raise LLMServiceError("Failed to parse extracted JSON from code block")
+            else:
+                # Last resort: try to find anything that looks like a JSON object
+                logger.warning("No code blocks found, trying to extract JSON object directly")
+                json_match = re.search(r'{[\s\S]*?}', response_text)
+                
+                if json_match:
+                    try:
+                        summaries = json.loads(json_match.group(0))
+                        logger.info("Successfully extracted and parsed JSON object")
+                    except json.JSONDecodeError:
+                        raise LLMServiceError("Failed to parse extracted JSON object")
+                else:
+                    raise LLMServiceError("No JSON found in the response")
+        
+        # Validate that the required keys are present
+        required_keys = ["beginner", "intermediate", "advanced"]
+        missing_keys = [key for key in required_keys if key not in summaries]
+        
+        if missing_keys:
+            logger.error(f"Missing required keys in JSON response: {missing_keys}")
+            raise LLMServiceError(f"Missing required keys in JSON response: {missing_keys}")
+        
+        logger.info("Successfully generated and parsed summaries in JSON format")
+        return summaries
+        
+    except Exception as e:
+        logger.error(f"Error generating summary JSON: {str(e)}")
+        raise LLMServiceError(f"Error generating summary JSON: {str(e)}")
+
+async def mock_generate_summary_json(
+    prompt: str,
+    max_tokens: int = 2500,
+    temperature: float = 0.3
+) -> Dict[str, str]:
+    """
+    Generate a mock JSON response containing paper summaries for testing.
+    
+    Args:
+        prompt: The prompt to generate summaries
+        max_tokens: Maximum tokens to generate (ignored in mock)
+        temperature: Controls randomness (ignored in mock)
+        
+    Returns:
+        Dictionary containing the generated summaries (beginner, intermediate, advanced)
+    """
+    # Extract the abstract from the prompt
+    abstract_match = re.search(r'Paper abstract: (.*?)(?:\n\n|\Z)', prompt, re.DOTALL)
+    abstract = abstract_match.group(1) if abstract_match else "Abstract not found in prompt"
+    
+    # Create mock summaries
+    return {
+        "beginner": f"This is a mock beginner summary based on: {abstract[:100]}...",
+        "intermediate": f"This is a mock intermediate summary that provides more details about: {abstract[:150]}...",
+        "advanced": f"This is a mock advanced summary with technical depth covering: {abstract[:200]}..."
+    } 

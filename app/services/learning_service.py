@@ -10,7 +10,6 @@ import os
 from app.database.supabase_client import supabase, get_paper_by_id
 from app.core.config import get_settings
 from app.services.arxiv_service import get_related_papers
-from app.services.summarization_service import generate_summaries
 from app.api.v1.models import (
     LearningItem, 
     LearningItemType, 
