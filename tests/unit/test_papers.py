@@ -34,8 +34,8 @@ def mock_dependencies():
     app.dependency_overrides = old_overrides
 
 @pytest.fixture
-def mock_arxiv_service():
-    """Mock the arxiv service for testing."""
+def mock_paper_service():
+    """Mock the paper service for testing."""
     with patch("app.api.v1.endpoints.papers.fetch_paper_metadata") as mock_fetch:
         # Create a sample paper metadata
         mock_metadata = PaperMetadata(
@@ -50,76 +50,54 @@ def mock_arxiv_service():
             source_url="https://arxiv.org/abs/2101.12345"
         )
         
+        # Set up the mock to return the sample metadata
         mock_fetch.return_value = mock_metadata
         
-        with patch("app.api.v1.endpoints.papers.download_and_process_paper") as mock_download:
-            mock_download.return_value = ("Full text", ["chunk1", "chunk2"])
-            
-            with patch("app.api.v1.endpoints.papers.get_related_papers") as mock_related:
-                mock_related.return_value = []
-                
-                with patch("app.services.chunk_service.chunk_text") as mock_chunk:
-                    mock_chunks = [
-                        {"text": "chunk1", "metadata": {}},
-                        {"text": "chunk2", "metadata": {}}
-                    ]
-                    mock_chunk.return_value = mock_chunks
-                    
-                    with patch("app.services.summarization_service.generate_summaries") as mock_summarize:
-                        mock_summarize.return_value = {
-                            "beginner": "Beginner summary",
-                            "intermediate": "Intermediate summary",
-                            "advanced": "Advanced summary"
-                        }
-                        
-                        yield mock_fetch
+        yield mock_fetch
 
 @pytest.fixture
 def mock_supabase_client():
     """Mock the Supabase client for testing."""
-    with patch("app.api.v1.endpoints.papers.get_paper_by_arxiv_id") as mock_get_by_arxiv:
-        mock_get_by_arxiv.return_value = None
+    with patch("app.api.v1.endpoints.papers.get_paper_by_source") as mock_get_by_source:
+        mock_get_by_source.return_value = None
         
-        with patch("app.api.v1.endpoints.papers.get_paper_by_source") as mock_get_by_source:
-            mock_get_by_source.return_value = None
+        with patch("app.api.v1.endpoints.papers.insert_paper") as mock_insert:
+            paper_id = str(uuid.uuid4())
             
-            with patch("app.api.v1.endpoints.papers.insert_paper") as mock_insert:
-                paper_id = str(uuid.uuid4())
+            mock_paper = {
+                "id": paper_id,
+                "arxiv_id": "2101.12345",
+                "source_url": "https://arxiv.org/abs/2101.12345",
+                "source_type": "arxiv",
+                "title": "Test Paper Title",
+                "authors": [{"name": "Test Author", "affiliations": ["Test University"]}],
+                "abstract": "This is a test abstract for the paper.",
+                "publication_date": datetime.now().isoformat(),
+                "summaries": None,
+                "related_papers": [],
+                "tags": {"status": "pending", "category": "cs.AI"}
+            }
+            
+            mock_insert.return_value = mock_paper
+            
+            with patch("app.api.v1.endpoints.papers.get_paper_by_id") as mock_get_by_id:
+                mock_get_by_id.return_value = mock_paper
                 
-                mock_paper = {
-                    "id": paper_id,
-                    "arxiv_id": "2101.12345",
-                    "source_url": "https://arxiv.org/abs/2101.12345",
-                    "source_type": "arxiv",
-                    "title": "Test Paper Title",
-                    "authors": [{"name": "Test Author", "affiliations": ["Test University"]}],
-                    "abstract": "This is a test abstract for the paper.",
-                    "publication_date": datetime.now().isoformat(),
-                    "summaries": None,
-                    "related_papers": [],
-                    "tags": {"status": "pending", "category": "cs.AI"}
-                }
-                
-                mock_insert.return_value = mock_paper
-                
-                with patch("app.api.v1.endpoints.papers.get_paper_by_id") as mock_get_by_id:
-                    mock_get_by_id.return_value = mock_paper
+                with patch("app.api.v1.endpoints.papers.update_paper") as mock_update:
+                    mock_update.return_value = mock_paper
                     
-                    with patch("app.api.v1.endpoints.papers.update_paper") as mock_update:
-                        mock_update.return_value = mock_paper
+                    with patch("app.api.v1.endpoints.papers.db_list_papers") as mock_list:
+                        mock_list.return_value = [mock_paper]
                         
-                        with patch("app.api.v1.endpoints.papers.db_list_papers") as mock_list:
-                            mock_list.return_value = [mock_paper]
+                        # Mock add_paper_to_user to avoid foreign key constraint error
+                        with patch("app.api.v1.endpoints.papers.add_paper_to_user") as mock_add_to_user:
+                            mock_add_to_user.return_value = None
                             
-                            # Mock add_paper_to_user to avoid foreign key constraint error
-                            with patch("app.api.v1.endpoints.papers.add_paper_to_user") as mock_add_to_user:
-                                mock_add_to_user.return_value = None
+                            # Mock create_conversation to avoid foreign key constraint error
+                            with patch("app.api.v1.endpoints.papers.create_conversation") as mock_create_conversation:
+                                mock_create_conversation.return_value = None
                                 
-                                # Mock create_conversation to avoid foreign key constraint error
-                                with patch("app.api.v1.endpoints.papers.create_conversation") as mock_create_conversation:
-                                    mock_create_conversation.return_value = None
-                                    
-                                    yield paper_id
+                                yield paper_id
 
 @pytest.fixture
 def mock_related_papers():
@@ -146,7 +124,7 @@ def mock_related_papers():
         ]
         yield mock_related
 
-def test_submit_paper(mock_arxiv_service, mock_supabase_client):
+def test_submit_paper(mock_paper_service, mock_supabase_client):
     """Test submitting a paper."""
     response = client.post(
         "/api/v1/papers/submit",

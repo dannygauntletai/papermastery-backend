@@ -5,6 +5,7 @@ from app.core.exceptions import SupabaseError
 from uuid import UUID
 from typing import Dict, Any, Optional, List
 from app.api.v1.models import SourceType
+import re
 
 logger = get_logger(__name__)
 
@@ -17,12 +18,12 @@ except Exception as e:
     raise SupabaseError(f"Failed to initialize Supabase client: {str(e)}")
 
 
-async def get_paper_by_id(paper_id: UUID) -> Optional[Dict[str, Any]]:
+async def get_paper_by_id(paper_id: str) -> Optional[Dict[str, Any]]:
     """
     Retrieve a paper from the Supabase database by its ID.
     
     Args:
-        paper_id: The UUID of the paper
+        paper_id: The ID of the paper
         
     Returns:
         The paper data as a dictionary, or None if not found
@@ -31,9 +32,9 @@ async def get_paper_by_id(paper_id: UUID) -> Optional[Dict[str, Any]]:
         SupabaseError: If there's an error retrieving the paper
     """
     try:
-        response = supabase.table("papers").select("*").eq("id", str(paper_id)).execute()
+        response = supabase.table("papers").select("*").eq("id", paper_id).execute()
         
-        if len(response.data) == 0:
+        if not response.data:
             return None
             
         return response.data[0]
@@ -84,9 +85,23 @@ async def get_paper_by_source(source_url: str, source_type: str) -> Optional[Dic
     try:
         response = supabase.table("papers").select("*").eq("source_url", source_url).eq("source_type", source_type).execute()
         
-        if len(response.data) == 0:
-            return None
+        if not response.data:
+            # For arXiv papers, also try to match by arXiv ID
+            if source_type == "arxiv" and "arxiv.org" in source_url:
+                # Extract arXiv ID from URL
+                match = re.search(r'(\d{4}\.\d{4,5}(?:v\d+)?)', source_url)
+                if match:
+                    arxiv_id = match.group(1)
+                    # Remove version if present
+                    if 'v' in arxiv_id:
+                        arxiv_id = arxiv_id.split('v')[0]
+                    
+                    # Try to find by arXiv ID
+                    response = supabase.table("papers").select("*").eq("arxiv_id", arxiv_id).execute()
             
+            if not response.data:
+                return None
+                
         return response.data[0]
     except Exception as e:
         logger.error(f"Error retrieving paper with source URL {source_url}: {str(e)}")
@@ -367,7 +382,7 @@ async def get_paper_full_text(paper_id: UUID) -> Optional[str]:
     """
     try:
         # Get the paper from the database
-        paper = await get_paper_by_id(paper_id)
+        paper = await get_paper_by_id(str(paper_id))
         if not paper:
             logger.warning(f"Paper with ID {paper_id} not found")
             return None

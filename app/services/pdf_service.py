@@ -101,37 +101,6 @@ async def download_pdf(url: str, force_download: bool = False) -> Tuple[str, boo
         logger.error(f"Error downloading PDF from {url}: {str(e)}")
         raise PDFDownloadError(f"Error downloading PDF: {str(e)}")
 
-async def download_arxiv_pdf(arxiv_id: str, force_download: bool = False) -> Tuple[str, bool]:
-    """
-    Download a PDF from arXiv and cache it locally.
-    
-    Args:
-        arxiv_id: The arXiv ID of the paper
-        force_download: Whether to force a re-download even if the PDF is cached
-        
-    Returns:
-        Tuple containing (path to the PDF file, whether it was newly downloaded)
-        
-    Raises:
-        PDFDownloadError: If there's an error downloading the PDF
-    """
-    # Clean the arXiv ID (remove version if present)
-    clean_arxiv_id = arxiv_id.split('v')[0] if 'v' in arxiv_id else arxiv_id
-    
-    # Define the cache path
-    cache_path = PDF_CACHE_DIR / f"{clean_arxiv_id}.pdf"
-    
-    # Check if the PDF is already cached
-    if cache_path.exists() and not force_download:
-        logger.info(f"Using cached PDF for arXiv ID: {arxiv_id}")
-        return str(cache_path.absolute()), False
-    
-    # Construct the arXiv PDF URL
-    arxiv_pdf_url = f"https://arxiv.org/pdf/{clean_arxiv_id}.pdf"
-    
-    # Use the generic download function
-    return await download_pdf(arxiv_pdf_url, force_download)
-
 async def get_paper_pdf(paper_id: UUID) -> Optional[str]:
     """
     Get the PDF for a paper by its ID.
@@ -152,41 +121,27 @@ async def get_paper_pdf(paper_id: UUID) -> Optional[str]:
             logger.warning(f"Paper with ID {paper_id} not found")
             return None
         
-        # Check the source type
-        source_type = paper.get("source_type", SourceType.ARXIV)
-        
-        if source_type == SourceType.ARXIV:
-            # Check if the paper has an arXiv ID
-            arxiv_id = paper.get("arxiv_id")
-            if not arxiv_id:
-                # Try to extract arXiv ID from source_url
-                source_url = paper.get("source_url")
-                if source_url:
-                    from app.services.url_service import extract_arxiv_id_from_url
-                    arxiv_id = await extract_arxiv_id_from_url(source_url)
-                
-                if not arxiv_id:
-                    logger.warning(f"Paper with ID {paper_id} doesn't have an arXiv ID and couldn't extract one from source_url")
-                    return None
-                
-            # Download the PDF
-            pdf_path, _ = await download_arxiv_pdf(arxiv_id)
-            return pdf_path
-        
-        elif source_type == SourceType.PDF:
-            # Check if the paper has a source URL
-            source_url = paper.get("source_url")
-            if not source_url:
-                logger.warning(f"Paper with ID {paper_id} doesn't have a source URL")
-                return None
-                
-            # Download the PDF
-            pdf_path, _ = await download_pdf(source_url)
-            return pdf_path
-        
-        else:
-            logger.warning(f"Unsupported source type for paper with ID {paper_id}: {source_type}")
+        # Get the source URL
+        source_url = paper.get("source_url")
+        if not source_url:
+            logger.warning(f"Paper with ID {paper_id} doesn't have a source URL")
             return None
+        
+        # For arXiv papers, convert abstract URL to PDF URL if needed
+        source_type = paper.get("source_type", SourceType.PDF)
+        if source_type == SourceType.ARXIV and 'arxiv.org/abs/' in source_url:
+            # Extract arXiv ID and convert to PDF URL
+            from app.services.url_service import extract_paper_id_from_url
+            paper_ids = await extract_paper_id_from_url(source_url)
+            arxiv_id = paper_ids.get('arxiv_id') or paper.get("arxiv_id")
+            
+            if arxiv_id:
+                source_url = f'https://arxiv.org/pdf/{arxiv_id}.pdf'
+                logger.info(f"Converted arXiv abstract URL to PDF URL: {source_url}")
+        
+        # Download the PDF
+        pdf_path, _ = await download_pdf(source_url)
+        return pdf_path
             
     except Exception as e:
         logger.error(f"Error getting PDF for paper with ID {paper_id}: {str(e)}")

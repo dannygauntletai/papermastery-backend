@@ -1,7 +1,7 @@
 import re
 import httpx
 import asyncio
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict
 from datetime import datetime
 import PyPDF2
 import tempfile
@@ -10,8 +10,8 @@ import io
 from app.api.v1.models import PaperMetadata, Author, SourceType
 from app.core.logger import get_logger
 from app.core.exceptions import InvalidPDFUrlError, PDFDownloadError, StorageError
-from app.services.arxiv_service import fetch_paper_metadata as fetch_arxiv_metadata
 from app.services.storage_service import get_file_url
+from app.utils.url_utils import extract_paper_id_from_url
 
 logger = get_logger(__name__)
 
@@ -32,37 +32,34 @@ async def detect_url_type(url: str) -> str:
     if re.match(r'https?://arxiv.org/(?:abs|pdf)/\d+\.\d+(?:v\d+)?', url):
         logger.info(f"Detected arXiv URL: {url}")
         return SourceType.ARXIV
-    
-    # Check if it's a Supabase storage URL
-    if re.search(r'/storage/v1/object/public/papers/', url):
-        logger.info(f"Detected storage file URL: {url}")
+        
+    # Check if it's a storage URL
+    if 'storage.googleapis.com' in url or 'supabase.co/storage' in url:
+        logger.info(f"Detected storage URL: {url}")
         return SourceType.FILE
         
     # Check if it's a PDF URL
-    try:
-        # Check if URL ends with .pdf
-        if url.lower().endswith('.pdf'):
-            logger.info(f"Detected PDF URL (by extension): {url}")
-            return SourceType.PDF
-            
-        # Make a HEAD request to check content type
-        async with httpx.AsyncClient() as client:
-            response = await client.head(url, follow_redirects=True, timeout=10.0)
-            
-            content_type = response.headers.get('content-type', '')
-            if 'application/pdf' in content_type.lower():
-                logger.info(f"Detected PDF URL (by content-type): {url}")
-                return SourceType.PDF
-    except Exception as e:
-        logger.error(f"Error checking URL type: {str(e)}")
+    if url.lower().endswith('.pdf'):
+        logger.info(f"Detected PDF URL by extension: {url}")
+        return SourceType.PDF
         
-    # If we get here, it's not a valid URL
-    logger.error(f"Invalid URL: {url}")
-    raise InvalidPDFUrlError(url)
+    # If not obvious from the URL, try to check the content type
+    try:
+        is_pdf = await is_pdf_url(url)
+        if is_pdf:
+            logger.info(f"Detected PDF URL by content type: {url}")
+            return SourceType.PDF
+    except Exception as e:
+        logger.warning(f"Error checking content type for URL {url}: {str(e)}")
+        
+    # If we get here, we couldn't determine the URL type
+    logger.warning(f"Could not determine URL type for {url}")
+    raise InvalidPDFUrlError(f"URL does not appear to be a valid arXiv or PDF URL: {url}")
+
 
 async def is_pdf_url(url: str) -> bool:
     """
-    Check if a URL points to a PDF by making a HEAD request.
+    Check if a URL points to a PDF by examining the content type.
     
     Args:
         url: The URL to check
@@ -72,12 +69,15 @@ async def is_pdf_url(url: str) -> bool:
     """
     try:
         async with httpx.AsyncClient() as client:
+            # Just get the headers to check content type
             response = await client.head(url, follow_redirects=True, timeout=10.0)
             
-            content_type = response.headers.get('content-type', '').lower()
-            return 'application/pdf' in content_type
-    except httpx.RequestError:
+            content_type = response.headers.get('content-type', '')
+            return 'application/pdf' in content_type.lower()
+    except Exception as e:
+        logger.warning(f"Error checking if URL is PDF: {str(e)}")
         return False
+
 
 async def extract_arxiv_id_from_url(url: str) -> Optional[str]:
     """
@@ -89,28 +89,9 @@ async def extract_arxiv_id_from_url(url: str) -> Optional[str]:
     Returns:
         The arXiv ID, or None if the URL is not an arXiv URL
     """
-    # Handle both abs and pdf formats
-    match = re.match(r'https?://arxiv.org/(?:abs|pdf)/(\d+\.\d+(?:v\d+)?)', url)
-    if match:
-        arxiv_id = match.group(1)
-        # Remove version if present
-        if 'v' in arxiv_id:
-            arxiv_id = arxiv_id.split('v')[0]
-        logger.info(f"Extracted arXiv ID {arxiv_id} from URL {url}")
-        return arxiv_id
-    
-    # If no match, try a more lenient pattern
-    match = re.search(r'(\d{4}\.\d{4,5}(?:v\d+)?)', url)
-    if match:
-        arxiv_id = match.group(1)
-        # Remove version if present
-        if 'v' in arxiv_id:
-            arxiv_id = arxiv_id.split('v')[0]
-        logger.info(f"Extracted arXiv ID {arxiv_id} from URL {url} using fallback pattern")
-        return arxiv_id
-    
-    logger.warning(f"Could not extract arXiv ID from URL: {url}")
-    return None
+    paper_ids = await extract_paper_id_from_url(url)
+    return paper_ids.get('arxiv_id')
+
 
 async def fetch_metadata_from_url(url: str, url_type: str) -> PaperMetadata:
     """
@@ -124,77 +105,59 @@ async def fetch_metadata_from_url(url: str, url_type: str) -> PaperMetadata:
         PaperMetadata object with the paper's metadata
         
     Raises:
-        InvalidPDFUrlError: If the URL is not a valid PDF URL
+        InvalidPDFUrlError: If the URL is not a valid paper URL
         PDFDownloadError: If there's an error downloading the PDF
-        StorageError: If there's an error with storage operations
     """
-    if url_type == SourceType.ARXIV:
-        # Extract arXiv ID from URL
-        arxiv_id = await extract_arxiv_id_from_url(url)
-        if not arxiv_id:
-            raise InvalidPDFUrlError(url)
+    # Extract paper identifiers from URL
+    paper_ids = await extract_paper_id_from_url(url)
+    
+    # For arXiv papers, use the arXiv API to fetch metadata
+    if url_type == SourceType.ARXIV and paper_ids.get('arxiv_id'):
+        try:
+            # Import here to avoid circular imports
+            from app.services.paper_service import fetch_arxiv_metadata
+            
+            # Use existing arXiv service to fetch metadata
+            metadata = await fetch_arxiv_metadata(paper_ids['arxiv_id'])
+            
+            # Ensure source type is set correctly
+            metadata.source_type = SourceType.ARXIV
+            metadata.source_url = url
+            
+            return metadata
+        except Exception as e:
+            logger.error(f"Error fetching arXiv metadata for {url}: {str(e)}")
+            # Fall back to PDF extraction if arXiv API fails
+            pass
+    
+    # For all other types (PDF, FILE) or if arXiv API fails, extract metadata from PDF
+    try:
+        # Download the PDF
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, follow_redirects=True, timeout=30.0)
+            
+            if response.status_code != 200:
+                raise PDFDownloadError(f"Failed to download PDF from {url}: HTTP {response.status_code}")
+                
+            pdf_content = response.content
+            
+        # Extract metadata from PDF
+        metadata = await extract_metadata_from_pdf(pdf_content, url)
         
-        # Use existing arXiv service to fetch metadata
-        metadata = await fetch_arxiv_metadata(arxiv_id)
-        
-        # Add source information
-        metadata.source_type = SourceType.ARXIV
+        # Set source type and URL
+        metadata.source_type = url_type
         metadata.source_url = url
         
+        # Add paper IDs if available
+        if paper_ids.get('arxiv_id'):
+            metadata.arxiv_id = paper_ids['arxiv_id']
+        if paper_ids.get('doi'):
+            metadata.doi = paper_ids['doi']
+            
         return metadata
-    
-    elif url_type == SourceType.PDF:
-        # Download PDF and extract metadata
-        try:
-            # Download the PDF
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, follow_redirects=True, timeout=30.0)
-                
-                if response.status_code != 200:
-                    raise PDFDownloadError(f"Failed to download PDF: HTTP {response.status_code}")
-                
-                pdf_content = response.content
-                
-            # Extract metadata from PDF
-            metadata = await extract_metadata_from_pdf(pdf_content, url)
-            
-            # Add source information
-            metadata.source_type = SourceType.PDF
-            metadata.source_url = url
-            
-            return metadata
-            
-        except Exception as e:
-            logger.error(f"Error processing PDF from URL {url}: {str(e)}")
-            raise PDFDownloadError(f"Error processing PDF: {str(e)}")
-    
-    elif url_type == SourceType.FILE:
-        # For storage files, extract metadata from the PDF
-        try:
-            # Download the PDF from storage
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, follow_redirects=True, timeout=30.0)
-                
-                if response.status_code != 200:
-                    raise StorageError(f"Failed to download PDF from storage: HTTP {response.status_code}")
-                
-                pdf_content = response.content
-                
-            # Extract metadata from PDF
-            metadata = await extract_metadata_from_pdf(pdf_content, url)
-            
-            # Add source information
-            metadata.source_type = SourceType.FILE
-            metadata.source_url = url
-            
-            return metadata
-            
-        except Exception as e:
-            logger.error(f"Error processing PDF from storage {url}: {str(e)}")
-            raise StorageError(f"Error processing PDF from storage: {str(e)}")
-    
-    else:
-        raise InvalidPDFUrlError(f"Unsupported URL type: {url_type}")
+    except Exception as e:
+        logger.error(f"Error extracting metadata from PDF at {url}: {str(e)}")
+        raise PDFDownloadError(f"Error extracting metadata from PDF: {str(e)}")
 
 async def extract_metadata_from_pdf(pdf_content: bytes, source_url: str) -> PaperMetadata:
     """

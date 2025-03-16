@@ -59,16 +59,22 @@ class Author(BaseModel):
 
 class PaperMetadata(BaseModel):
     """Model for paper metadata."""
+    # Paper identifiers - at least one should be provided if available
     arxiv_id: Optional[str] = None
+    # Core metadata
     title: str
     authors: List[Author]
     abstract: str 
     publication_date: datetime
-    categories: Optional[List[str]] = None
-    doi: Optional[str] = None
-    source_type: SourceType = SourceType.ARXIV
-    source_url: str
     
+    # Additional metadata
+    categories: Optional[List[str]] = None
+    keywords: Optional[List[str]] = None
+    
+    # Source information
+    source_type: SourceType = SourceType.PDF  # Default to PDF instead of ARXIV
+    source_url: str
+
 class PaperSummary(BaseModel):
     """Model for paper summaries."""
     beginner: str
@@ -77,13 +83,18 @@ class PaperSummary(BaseModel):
     
 class PaperBase(BaseModel):
     """Base model for paper attributes."""
+    # Paper identifiers - at least one should be provided if available
     arxiv_id: Optional[str] = None
+    
+    # Core metadata
     title: str
     authors: List[Author]
     abstract: str
     publication_date: datetime
     full_text: Optional[str] = None
-    source_type: SourceType = SourceType.ARXIV
+    
+    # Source information
+    source_type: SourceType = SourceType.PDF  # Default to PDF instead of ARXIV
     source_url: str
 
 class PaperCreate(PaperBase):

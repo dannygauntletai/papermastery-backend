@@ -7,14 +7,14 @@ import hashlib
 
 from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary, SourceType
 from app.core.logger import get_logger
-from app.services.arxiv_service import (
-    fetch_paper_metadata,
+from app.services.paper_service import (
+    fetch_arxiv_metadata,
     get_related_papers
 )
 from app.services.pdf_service import download_and_process_paper, download_pdf, read_pdf_file_to_bytes
-from app.services.url_service import detect_url_type, fetch_metadata_from_url, extract_arxiv_id_from_url
+from app.services.url_service import detect_url_type, fetch_metadata_from_url
+from app.utils.url_utils import extract_paper_id_from_url
 from app.database.supabase_client import (
-    get_paper_by_arxiv_id,
     get_paper_by_id,
     get_paper_by_source,
     insert_paper,
@@ -192,26 +192,21 @@ async def submit_paper(
                 detail=f"Unexpected error processing PDF: {str(e)}"
             )
     
+    # Extract paper ID from URL if it's an arXiv URL
+    paper_ids = await extract_paper_id_from_url(original_url if 'original_url' in locals() else source_url)
+    arxiv_id = paper_ids.get('arxiv_id')
+    
+    if source_type == SourceType.ARXIV and not arxiv_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid arXiv URL: {original_url if 'original_url' in locals() else source_url}"
+        )
+    
     # Check if paper already exists
-    existing_paper = None
-    
-    if source_type == SourceType.ARXIV:
-        # Extract arXiv ID from the URL
-        arxiv_id = await extract_arxiv_id_from_url(original_url if 'original_url' in locals() else source_url)
-        if not arxiv_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid arXiv URL: {original_url if 'original_url' in locals() else source_url}"
-            )
-        
-        # Check if paper already exists by arXiv ID
-        existing_paper = await get_paper_by_arxiv_id(arxiv_id)
-    else:
-        # For non-arXiv papers, check by source URL
-        # If we downloaded and reuploaded, use the original URL for checking
-        check_url = original_url if 'original_url' in locals() else source_url
-        existing_paper = await get_paper_by_source(check_url, source_type)
-    
+    # If we downloaded and reuploaded, use the original URL for checking
+    check_url = original_url if 'original_url' in locals() else source_url
+    existing_paper = await get_paper_by_source(check_url, source_type)
+
     if existing_paper:
         logger.info(f"Paper with source URL {source_url} already exists, adding to user's papers")
         await add_paper_to_user(user_id, existing_paper["id"])
@@ -424,7 +419,7 @@ async def get_related_papers_for_paper(
             # Try to extract arXiv ID from source_url
             source_url = paper.get("source_url")
             if source_url:
-                arxiv_id = await extract_arxiv_id_from_url(source_url)
+                arxiv_id = await extract_paper_id_from_url(source_url)
             
             if not arxiv_id:
                 logger.warning(f"Paper with ID {paper_id} has no arXiv ID")
@@ -509,7 +504,7 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
     This function:
     1. Downloads and extracts text from the paper
     2. Generates summaries for the paper
-    3. Finds related papers (for arXiv papers)
+    3. Finds related papers
     4. Updates the paper in the database
     
     Args:
@@ -529,15 +524,6 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
             logger.error(f"Paper with ID {paper_id} not found in database")
             await update_paper(paper_id, {"tags": {"status": "error", "error_message": "Paper not found in database"}})
             return
-            
-        # For arXiv papers, we need to get the original arXiv URL for metadata
-        original_arxiv_url = None
-        if source_type == SourceType.ARXIV:
-            if paper and paper.get("arxiv_id"):
-                # Construct the arXiv URL from the ID
-                arxiv_id = paper.get("arxiv_id")
-                original_arxiv_url = f"https://arxiv.org/abs/{arxiv_id}"
-                logger.info(f"Using original arXiv URL for metadata: {original_arxiv_url}")
         
         # Download and extract text from paper
         # Use the storage URL for downloading the PDF
@@ -562,20 +548,15 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
         
         # Find related papers
         related_papers = []
-        if source_type == SourceType.ARXIV:
-            try:
-                arxiv_id = None
-                if paper and paper.get("arxiv_id"):
-                    arxiv_id = paper.get("arxiv_id")
-                else:
-                    # Try to extract from the original URL if available
-                    url_to_extract_from = original_arxiv_url or source_url
-                    arxiv_id = await extract_arxiv_id_from_url(url_to_extract_from)
-                
-                if arxiv_id:
-                    related_papers = await get_related_papers(arxiv_id)
-            except Exception as e:
-                logger.error(f"Error getting related papers for {source_url}: {str(e)}")
+        try:
+            # Get related papers using the paper ID, title, and abstract
+            related_papers = await get_related_papers(
+                paper_id=paper_id,
+                title=paper.get("title"),
+                abstract=extracted_abstract or paper.get("abstract")
+            )
+        except Exception as e:
+            logger.error(f"Error getting related papers for {source_url}: {str(e)}")
         
         # Update paper with processed data
         update_data = {

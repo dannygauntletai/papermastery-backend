@@ -1,5 +1,5 @@
 import asyncio
-from app.services.arxiv_service import download_and_process_paper
+from app.services.paper_service import download_and_process_paper
 from uuid import uuid4
 
 async def test_pdf_processing():
