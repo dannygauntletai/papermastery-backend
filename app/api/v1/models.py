@@ -115,6 +115,10 @@ class PaperResponse(Paper):
     """Model for paper response in API."""
     pass
 
+class PaperSubmitResponse(BaseModel):
+    """Model for paper submission response with only UUID."""
+    id: str
+
 # Flashcard and Quiz models
 class CardItem(BaseModel):
     """Model for flashcard item."""

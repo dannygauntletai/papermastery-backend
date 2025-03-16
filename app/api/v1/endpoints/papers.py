@@ -4,8 +4,9 @@ from uuid import UUID
 import uuid
 import json
 import hashlib
+from datetime import datetime
 
-from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary, SourceType
+from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary, SourceType, PaperSubmitResponse
 from app.core.logger import get_logger
 from app.services.paper_service import (
     fetch_arxiv_metadata,
@@ -38,7 +39,7 @@ router = APIRouter(
 )
 
 
-@router.post("/submit", response_model=PaperResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post("/submit", response_model=PaperSubmitResponse, status_code=status.HTTP_202_ACCEPTED)
 async def submit_paper(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -62,7 +63,7 @@ async def submit_paper(
         user_id: The ID of the authenticated user
         
     Returns:
-        The paper data with processing status
+        The paper ID as a UUID
     """
     logger.info(f"Received paper submission from user {user_id}")
     
@@ -192,16 +193,6 @@ async def submit_paper(
                 detail=f"Unexpected error processing PDF: {str(e)}"
             )
     
-    # Extract paper ID from URL if it's an arXiv URL
-    paper_ids = await extract_paper_id_from_url(original_url if 'original_url' in locals() else source_url)
-    arxiv_id = paper_ids.get('arxiv_id')
-    
-    if source_type == SourceType.ARXIV and not arxiv_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid arXiv URL: {original_url if 'original_url' in locals() else source_url}"
-        )
-    
     # Check if paper already exists
     # If we downloaded and reuploaded, use the original URL for checking
     check_url = original_url if 'original_url' in locals() else source_url
@@ -224,39 +215,29 @@ async def submit_paper(
             # If the conversation creation fails, log the error but continue
             logger.warning(f"Could not create conversation for existing paper: {str(e)}")
         
-        return existing_paper
+        # Return only the UUID for existing paper
+        return {"id": existing_paper["id"]}
     
-    # Fetch paper metadata based on source type
-    try:
-        # For arXiv papers, use the original URL for metadata extraction
-        metadata_url = original_url if source_type == SourceType.ARXIV and 'original_url' in locals() else source_url
-        metadata_source_type = SourceType.ARXIV if source_type == SourceType.ARXIV and 'original_url' in locals() else source_type
-        
-        paper_metadata = await fetch_metadata_from_url(metadata_url, metadata_source_type)
-    except Exception as e:
-        logger.error(f"Error fetching metadata for URL {source_url}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error fetching paper metadata: {str(e)}"
-        )
-    
-    # Create initial paper entry in database
+    # Create minimal paper entry in database with placeholders
     paper_data = {
-        "title": paper_metadata.title,
-        "authors": [{"name": author.name, "affiliations": author.affiliations} for author in paper_metadata.authors],
-        "abstract": '',  # Set abstract to None initially, will be extracted during processing
-        "publication_date": paper_metadata.publication_date.isoformat(),
+        "title": "Processing...",  # Placeholder
+        "authors": [],  # Empty array initially
+        "abstract": "",  # Empty initially
+        "publication_date": datetime.now().isoformat(),  # Placeholder date
         "summaries": None,
         "embedding_id": None,
         "related_papers": None,
         "source_type": source_type,
-        "source_url": source_url,  # Always use the Supabase storage URL for storage
-        "tags": {"status": "pending"}  # Use tags field to track status instead of processing_status
+        "source_url": source_url,
+        "tags": {"status": "processing"}
     }
     
-    # Add arXiv ID if available
-    if hasattr(paper_metadata, 'arxiv_id') and paper_metadata.arxiv_id:
-        paper_data["arxiv_id"] = paper_metadata.arxiv_id
+    # Add arXiv ID if available from URL
+    if source_type == SourceType.ARXIV:
+        paper_ids = await extract_paper_id_from_url(original_url if 'original_url' in locals() else source_url)
+        arxiv_id = paper_ids.get('arxiv_id')
+        if arxiv_id:
+            paper_data["arxiv_id"] = arxiv_id
     
     new_paper = await insert_paper(paper_data)
     
@@ -285,7 +266,9 @@ async def submit_paper(
     )
     
     logger.info(f"Paper submission accepted, processing in background: {source_url}")
-    return new_paper
+    
+    # Return only the UUID
+    return {"id": new_paper["id"]}
 
 
 @router.get("/{paper_id}", response_model=PaperResponse)
