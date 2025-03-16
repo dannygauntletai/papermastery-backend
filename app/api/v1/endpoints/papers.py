@@ -3,6 +3,7 @@ from typing import List, Optional, Dict, Any, Union
 from uuid import UUID
 import uuid
 import json
+import hashlib
 
 from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary, SourceType
 from app.core.logger import get_logger
@@ -10,7 +11,7 @@ from app.services.arxiv_service import (
     fetch_paper_metadata,
     get_related_papers
 )
-from app.services.pdf_service import download_and_process_paper
+from app.services.pdf_service import download_and_process_paper, download_pdf, read_pdf_file_to_bytes
 from app.services.url_service import detect_url_type, fetch_metadata_from_url, extract_arxiv_id_from_url
 from app.database.supabase_client import (
     get_paper_by_arxiv_id,
@@ -28,7 +29,7 @@ from app.services.pinecone_service import store_chunks
 from app.services.summarization_service import generate_summaries
 from app.services.learning_service import generate_learning_path
 from app.dependencies import validate_environment, get_current_user
-from app.core.exceptions import InvalidPDFUrlError
+from app.core.exceptions import InvalidPDFUrlError, PDFDownloadError
 from app.services.storage_service import upload_file_to_storage, get_file_url
 from app.core.exceptions import StorageError
 
@@ -150,24 +151,71 @@ async def submit_paper(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"URL does not point to a valid PDF: {source_url}"
             )
+            
+        # Download the PDF from the URL
+        original_url = source_url
+        try:
+            # Download the PDF
+            pdf_path, is_new_download = await download_pdf(source_url)
+            
+            # Read the PDF file into bytes
+            pdf_content = await read_pdf_file_to_bytes(pdf_path)
+            
+            # Extract filename from URL or use a default name
+            from urllib.parse import urlparse
+            parsed_url = urlparse(source_url)
+            path_parts = parsed_url.path.split('/')
+            file_name = path_parts[-1] if path_parts[-1] else f"paper_{hashlib.md5(source_url.encode()).hexdigest()[:8]}.pdf"
+            
+            # Make sure the filename ends with .pdf
+            if not file_name.lower().endswith('.pdf'):
+                file_name += '.pdf'
+            
+            # Upload the PDF to Supabase storage
+            file_path = await upload_file_to_storage(pdf_content, file_name)
+            
+            # Generate the public URL
+            source_url = await get_file_url(file_path)
+            logger.info(f"PDF downloaded from {original_url} and uploaded to storage: {source_url}")
+            
+        except (PDFDownloadError, InvalidPDFUrlError) as e:
+            logger.error(f"Error downloading PDF from URL: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Error downloading PDF: {str(e)}"
+            )
+        except StorageError as e:
+            logger.error(f"Error uploading PDF to storage: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error uploading PDF to storage: {str(e)}"
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error processing PDF: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Unexpected error processing PDF: {str(e)}"
+            )
     
     # Check if paper already exists
     existing_paper = None
     
     if source_type == SourceType.ARXIV:
         # Extract arXiv ID from the URL
-        arxiv_id = await extract_arxiv_id_from_url(source_url)
+        arxiv_id = await extract_arxiv_id_from_url(original_url if 'original_url' in locals() else source_url)
         if not arxiv_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid arXiv URL: {source_url}"
+                detail=f"Invalid arXiv URL: {original_url if 'original_url' in locals() else source_url}"
             )
         
         # Check if paper already exists by arXiv ID
         existing_paper = await get_paper_by_arxiv_id(arxiv_id)
     else:
-        # Check if paper already exists by source URL and type
-        existing_paper = await get_paper_by_source(source_url, source_type)
+        # For non-arXiv papers, check by source URL
+        # If we downloaded and reuploaded, use the original URL for checking
+        check_url = original_url if 'original_url' in locals() else source_url
+        existing_paper = await get_paper_by_source(check_url, source_type)
     
     if existing_paper:
         logger.info(f"Paper with source URL {source_url} already exists, adding to user's papers")
@@ -190,7 +238,11 @@ async def submit_paper(
     
     # Fetch paper metadata based on source type
     try:
-        paper_metadata = await fetch_metadata_from_url(source_url, source_type)
+        # For arXiv papers, use the original URL for metadata extraction
+        metadata_url = original_url if source_type == SourceType.ARXIV and 'original_url' in locals() else source_url
+        metadata_source_type = SourceType.ARXIV if source_type == SourceType.ARXIV and 'original_url' in locals() else source_type
+        
+        paper_metadata = await fetch_metadata_from_url(metadata_url, metadata_source_type)
     except Exception as e:
         logger.error(f"Error fetching metadata for URL {source_url}: {str(e)}")
         raise HTTPException(
@@ -208,7 +260,7 @@ async def submit_paper(
         "embedding_id": None,
         "related_papers": None,
         "source_type": source_type,
-        "source_url": source_url,
+        "source_url": source_url,  # Always use the Supabase storage URL for storage
         "tags": {"status": "pending"}  # Use tags field to track status instead of processing_status
     }
     
@@ -467,8 +519,8 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
     5. Updates the paper in the database
     
     Args:
-        source_url: The URL to the paper
-        source_type: The type of source ("arxiv" or "pdf")
+        source_url: The URL to the paper (Supabase storage URL for uploaded files)
+        source_type: The type of source ("arxiv", "pdf", or "file")
         paper_id: The UUID of the paper in the database
     """
     try:
@@ -477,7 +529,19 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
         # Update status to processing
         await update_paper(paper_id, {"tags": {"status": "processing"}})
         
+        # For arXiv papers, we need to get the original arXiv URL for metadata
+        original_arxiv_url = None
+        if source_type == SourceType.ARXIV:
+            # Get the paper from the database to check if it has an arXiv ID
+            paper = await get_paper_by_id(paper_id)
+            if paper and paper.get("arxiv_id"):
+                # Construct the arXiv URL from the ID
+                arxiv_id = paper.get("arxiv_id")
+                original_arxiv_url = f"https://arxiv.org/abs/{arxiv_id}"
+                logger.info(f"Using original arXiv URL for metadata: {original_arxiv_url}")
+        
         # Download and process paper
+        # Use the storage URL for downloading the PDF
         full_text, chunks = await download_and_process_paper(source_url, paper_id, source_type)
         
         # Store chunks in Pinecone
@@ -491,10 +555,14 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
         if source_type == SourceType.ARXIV:
             try:
                 arxiv_id = None
-                if hasattr(paper_metadata, 'arxiv_id') and paper_metadata.arxiv_id:
-                    arxiv_id = paper_metadata.arxiv_id
+                # Get the paper from the database
+                paper = await get_paper_by_id(paper_id)
+                if paper and paper.get("arxiv_id"):
+                    arxiv_id = paper.get("arxiv_id")
                 else:
-                    arxiv_id = await extract_arxiv_id_from_url(source_url)
+                    # Try to extract from the original URL if available
+                    url_to_extract_from = original_arxiv_url or source_url
+                    arxiv_id = await extract_arxiv_id_from_url(url_to_extract_from)
                 
                 if arxiv_id:
                     related_papers = await get_related_papers(arxiv_id)

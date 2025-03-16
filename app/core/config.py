@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     SUPABASE_KEY: str = Field(default_factory=lambda: os.getenv("SUPABASE_KEY", ""))
     SUPABASE_SERVICE_KEY: str = Field(default_factory=lambda: os.getenv("SUPABASE_SERVICE_KEY", ""))
     SUPABASE_STORAGE_BUCKET: str = Field(default_factory=lambda: os.getenv("SUPABASE_STORAGE_BUCKET", "papers"))
-    MAX_FILE_SIZE_MB: int = Field(default_factory=lambda: int(os.getenv("MAX_FILE_SIZE_MB", "10")))
+    MAX_FILE_SIZE_MB: int = Field(default_factory=lambda: int(os.getenv("MAX_FILE_SIZE_MB", "100")))
     
     # Pinecone configuration
     PINECONE_API_KEY: str = Field(default_factory=lambda: os.getenv("PINECONE_API_KEY", ""))
@@ -87,7 +87,7 @@ SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
 SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
 SUPABASE_STORAGE_BUCKET: str = os.getenv("SUPABASE_STORAGE_BUCKET", "papers")
-MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
+MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
 PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY", "")
 PINECONE_ENVIRONMENT: str = os.getenv("PINECONE_ENVIRONMENT", "us-west1-gcp")
 PINECONE_INDEX: str = os.getenv("PINECONE_INDEX", "arxiv-chunks")

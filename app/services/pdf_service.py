@@ -20,6 +20,32 @@ logger = get_logger(__name__)
 PDF_CACHE_DIR = Path("./pdf_cache")
 PDF_CACHE_DIR.mkdir(exist_ok=True)
 
+async def read_pdf_file_to_bytes(file_path: str) -> bytes:
+    """
+    Read a PDF file into bytes.
+    
+    Args:
+        file_path: The path to the PDF file
+        
+    Returns:
+        The binary content of the PDF file
+        
+    Raises:
+        FileNotFoundError: If the file doesn't exist
+        IOError: If there's an error reading the file
+    """
+    try:
+        logger.info(f"Reading PDF file: {file_path}")
+        with open(file_path, 'rb') as f:
+            content = f.read()
+        return content
+    except FileNotFoundError:
+        logger.error(f"PDF file not found: {file_path}")
+        raise
+    except IOError as e:
+        logger.error(f"Error reading PDF file {file_path}: {str(e)}")
+        raise
+
 async def download_pdf(url: str, force_download: bool = False) -> Tuple[str, bool]:
     """
     Download a PDF from any URL and cache it locally.
@@ -35,6 +61,12 @@ async def download_pdf(url: str, force_download: bool = False) -> Tuple[str, boo
         PDFDownloadError: If there's an error downloading the PDF
     """
     try:
+        # Convert arXiv abstract URLs to PDF URLs
+        if url.startswith('https://arxiv.org/abs/'):
+            arxiv_id = url.split('https://arxiv.org/abs/')[1].split('v')[0].split('?')[0].strip()
+            url = f'https://arxiv.org/pdf/{arxiv_id}.pdf'
+            logger.info(f"Converted arXiv abstract URL to PDF URL: {url}")
+        
         # Generate a cache filename based on the URL
         url_hash = hashlib.md5(url.encode()).hexdigest()
         cache_path = PDF_CACHE_DIR / f"{url_hash}.pdf"

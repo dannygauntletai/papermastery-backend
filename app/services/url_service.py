@@ -28,7 +28,7 @@ async def detect_url_type(url: str) -> str:
     Raises:
         InvalidPDFUrlError: If the URL is not a valid arXiv, PDF, or storage URL
     """
-    # Check if it's an arXiv URL
+    # Check if it's an arXiv URL (both abs and pdf formats)
     if re.match(r'https?://arxiv.org/(?:abs|pdf)/\d+\.\d+(?:v\d+)?', url):
         logger.info(f"Detected arXiv URL: {url}")
         return SourceType.ARXIV
@@ -84,18 +84,32 @@ async def extract_arxiv_id_from_url(url: str) -> Optional[str]:
     Extract the arXiv ID from an arXiv URL.
     
     Args:
-        url: The arXiv URL
+        url: The arXiv URL (can be abs or pdf format)
         
     Returns:
         The arXiv ID, or None if the URL is not an arXiv URL
     """
+    # Handle both abs and pdf formats
     match = re.match(r'https?://arxiv.org/(?:abs|pdf)/(\d+\.\d+(?:v\d+)?)', url)
     if match:
         arxiv_id = match.group(1)
         # Remove version if present
         if 'v' in arxiv_id:
             arxiv_id = arxiv_id.split('v')[0]
+        logger.info(f"Extracted arXiv ID {arxiv_id} from URL {url}")
         return arxiv_id
+    
+    # If no match, try a more lenient pattern
+    match = re.search(r'(\d{4}\.\d{4,5}(?:v\d+)?)', url)
+    if match:
+        arxiv_id = match.group(1)
+        # Remove version if present
+        if 'v' in arxiv_id:
+            arxiv_id = arxiv_id.split('v')[0]
+        logger.info(f"Extracted arXiv ID {arxiv_id} from URL {url} using fallback pattern")
+        return arxiv_id
+    
+    logger.warning(f"Could not extract arXiv ID from URL: {url}")
     return None
 
 async def fetch_metadata_from_url(url: str, url_type: str) -> PaperMetadata:
