@@ -53,15 +53,11 @@ Please generate three summaries with the following characteristics:
    - Use technical language appropriate for experts in the field
    - Structure with formal academic headings
 
-IMPORTANT: Return your response in the following JSON format:
-```json
-{
-  "extracted_abstract": "The exact abstract text extracted from the paper...",
-  "beginner": "The beginner summary text goes here...",
-  "intermediate": "The intermediate summary text goes here...",
-  "advanced": "The advanced summary text goes here..."
-}
-```
+
+Use this JSON schema:
+
+PaperSummary = {'extracted_abstract': str, 'beginner': str, 'intermediate': str, 'advanced': str}
+Return: PaperSummary
 
 All three of your summaries should be formatted as markdown with a title and clear sections. The abstract should never be in markdown and should be a single plain text string.
 
