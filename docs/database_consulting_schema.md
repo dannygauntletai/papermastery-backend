@@ -5,6 +5,7 @@ CREATE TABLE researchers (
     user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
     name VARCHAR(255) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
+    additional_emails JSONB, -- Array of alternative emails ["email1@example.com", "email2@example.com"]
     bio TEXT,
     expertise JSONB,  -- e.g., ["machine learning", "physics"]
     achievements JSONB,  -- e.g., ["machine learning", "physics"]

@@ -25,6 +25,23 @@ services:
         sync: false
       - key: SENDGRID_FROM_EMAIL
         sync: false
+      # Consulting System Environment Variables
+      - key: ZOOM_API_KEY
+        sync: false
+      - key: ZOOM_API_SECRET
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: FIRECRAWL_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: ROCKETREACH_API_KEY
+        sync: false
+      - key: REDIS_URL
+        sync: false
       - key: APP_ENV
         value: production
       - key: LOG_LEVEL

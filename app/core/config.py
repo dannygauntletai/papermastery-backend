@@ -22,6 +22,9 @@ if gemini_key:
 class Settings(BaseSettings):
     """Application settings with validation and defaults."""
     
+    # API configuration
+    API_V1_STR: str = Field(default_factory=lambda: os.getenv("API_V1_STR", "/api/v1"))
+    
     # Supabase configuration
     SUPABASE_URL: str = Field(default_factory=lambda: os.getenv("SUPABASE_URL", ""))
     SUPABASE_KEY: str = Field(default_factory=lambda: os.getenv("SUPABASE_KEY", ""))
@@ -61,6 +64,29 @@ class Settings(BaseSettings):
     # Application configuration
     APP_ENV: str = Field(default_factory=lambda: os.getenv("APP_ENV", "development"))
     
+    # Consulting System Configuration
+    # Redis Configuration
+    REDIS_URL: str = Field(default_factory=lambda: os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+    
+    # Zoom API Configuration
+    ZOOM_API_KEY: str = Field(default_factory=lambda: os.getenv("ZOOM_API_KEY", ""))
+    ZOOM_API_SECRET: str = Field(default_factory=lambda: os.getenv("ZOOM_API_SECRET", ""))
+    
+    # Stripe Configuration
+    STRIPE_SECRET_KEY: str = Field(default_factory=lambda: os.getenv("STRIPE_SECRET_KEY", ""))
+    STRIPE_WEBHOOK_SECRET: str = Field(default_factory=lambda: os.getenv("STRIPE_WEBHOOK_SECRET", ""))
+    STRIPE_PLATFORM_FEE_PERCENTAGE: float = Field(default_factory=lambda: float(os.getenv("STRIPE_PLATFORM_FEE_PERCENTAGE", "5")))
+    
+    # Consulting System Settings
+    CONSULTING_SUBSCRIPTION_PRICE: float = Field(default_factory=lambda: float(os.getenv("CONSULTING_SUBSCRIPTION_PRICE", "19.99")))
+    OUTREACH_REQUEST_EXPIRY_DAYS: int = Field(default_factory=lambda: int(os.getenv("OUTREACH_REQUEST_EXPIRY_DAYS", "14")))
+    SESSION_REMINDER_HOURS: int = Field(default_factory=lambda: int(os.getenv("SESSION_REMINDER_HOURS", "24")))
+    
+    # Data Collection Services
+    FIRECRAWL_API_KEY: str = Field(default_factory=lambda: os.getenv("FIRECRAWL_API_KEY", ""))
+    TAVILY_API_KEY: str = Field(default_factory=lambda: os.getenv("TAVILY_API_KEY", ""))
+    ROCKETREACH_API_KEY: str = Field(default_factory=lambda: os.getenv("ROCKETREACH_API_KEY", ""))
+    
     def validate_config(self) -> None:
         """Validate that all required environment variables are set."""
         errors = []
@@ -91,6 +117,7 @@ SENDGRID_API_KEY: str = os.getenv("SENDGRID_API_KEY", "")
 SENDGRID_FROM_EMAIL: str = os.getenv("SENDGRID_FROM_EMAIL", "")
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 APP_ENV: str = os.getenv("APP_ENV", "development")
+API_V1_STR: str = os.getenv("API_V1_STR", "/api/v1")
 
 _settings = None
 

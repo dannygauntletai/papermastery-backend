@@ -3,9 +3,63 @@ from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 from app.core.logger import get_logger
 from app.core.config import SENDGRID_API_KEY, SENDGRID_FROM_EMAIL
-from typing import Optional
+from typing import Optional, List
 
 logger = get_logger(__name__)
+
+async def send_email(
+    to_email: str, 
+    subject: str, 
+    content: str, 
+    from_email: Optional[str] = None,
+    cc: Optional[List[str]] = None,
+    bcc: Optional[List[str]] = None
+) -> bool:
+    """
+    Send an email using SendGrid.
+    
+    Args:
+        to_email: The recipient's email address
+        subject: Email subject
+        content: HTML content of the email
+        from_email: Sender email (defaults to SENDGRID_FROM_EMAIL)
+        cc: List of CC recipients
+        bcc: List of BCC recipients
+        
+    Returns:
+        bool: True if the email was sent successfully, False otherwise
+    """
+    try:
+        message = Mail(
+            from_email=from_email or SENDGRID_FROM_EMAIL,
+            to_emails=to_email,
+            subject=subject,
+            html_content=content
+        )
+        
+        # Add CC recipients if provided
+        if cc:
+            for cc_email in cc:
+                message.add_cc(cc_email)
+                
+        # Add BCC recipients if provided
+        if bcc:
+            for bcc_email in bcc:
+                message.add_bcc(bcc_email)
+        
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        response = sg.send(message)
+        
+        if response.status_code >= 200 and response.status_code < 300:
+            logger.info(f"Email sent successfully to {to_email}")
+            return True
+        else:
+            logger.error(f"Failed to send email to {to_email}. Status code: {response.status_code}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error sending email to {to_email}: {str(e)}")
+        return False
 
 async def send_waiting_list_confirmation(email: str) -> bool:
     """

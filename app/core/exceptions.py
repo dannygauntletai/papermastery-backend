@@ -4,6 +4,18 @@ class ArXivMasteryException(Exception):
     """Base exception for all ArXiv Mastery app exceptions."""
     pass
 
+class ExternalAPIError(ArXivMasteryException):
+    """Base exception for errors from external APIs."""
+    def __init__(self, message: str):
+        self.message = f"External API error: {message}"
+        super().__init__(self.message)
+
+class DataCollectionError(ExternalAPIError):
+    """Exception raised for errors in the data collection process."""
+    def __init__(self, message: str):
+        self.message = f"Data collection error: {message}"
+        super().__init__(self.message)
+
 class InvalidArXivLinkError(ArXivMasteryException):
     """Raised when an invalid arXiv link is provided."""
     def __init__(self, link: str):
@@ -77,7 +89,7 @@ def http_exception_handler(exc):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=exc.message
         )
-    elif isinstance(exc, ArXivAPIError):
+    elif isinstance(exc, (ArXivAPIError, ExternalAPIError)):
         return HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=exc.message

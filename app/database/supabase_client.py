@@ -399,4 +399,646 @@ async def get_paper_full_text(paper_id: UUID) -> Optional[str]:
         return full_text
     except Exception as e:
         logger.error(f"Error retrieving full text for paper with ID {paper_id}: {str(e)}")
-        raise SupabaseError(f"Error retrieving full text for paper with ID {paper_id}: {str(e)}") 
+        raise SupabaseError(f"Error retrieving full text for paper with ID {paper_id}: {str(e)}")
+
+
+# ==================== Consulting System CRUD Operations ====================
+
+async def create_researcher(researcher_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create a new researcher profile in the database.
+    
+    Args:
+        researcher_data: Data for the researcher profile
+        
+    Returns:
+        The created researcher data
+        
+    Raises:
+        SupabaseError: If there's an error creating the researcher
+    """
+    try:
+        response = supabase.table("researchers").insert(researcher_data).execute()
+        
+        if not response.data:
+            logger.error("Failed to create researcher profile")
+            raise SupabaseError("Failed to create researcher profile")
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error creating researcher profile: {str(e)}")
+        raise SupabaseError(f"Error creating researcher profile: {str(e)}")
+
+
+async def get_researcher_by_id(researcher_id: UUID) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve a researcher by ID.
+    
+    Args:
+        researcher_id: The UUID of the researcher
+        
+    Returns:
+        The researcher data or None if not found
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the researcher
+    """
+    try:
+        response = supabase.table("researchers").select("*").eq("id", str(researcher_id)).execute()
+        
+        if not response.data:
+            return None
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error retrieving researcher with ID {researcher_id}: {str(e)}")
+        raise SupabaseError(f"Error retrieving researcher with ID {researcher_id}: {str(e)}")
+
+
+async def get_researcher_by_email(email: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve a researcher by email.
+    
+    Args:
+        email: The email of the researcher
+        
+    Returns:
+        The researcher data or None if not found
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the researcher
+    """
+    try:
+        response = supabase.table("researchers").select("*").eq("email", email).execute()
+        
+        if not response.data:
+            return None
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error retrieving researcher with email {email}: {str(e)}")
+        raise SupabaseError(f"Error retrieving researcher with email {email}: {str(e)}")
+
+
+async def update_researcher(researcher_id: UUID, update_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Update a researcher profile.
+    
+    Args:
+        researcher_id: The UUID of the researcher
+        update_data: The data to update
+        
+    Returns:
+        The updated researcher data
+        
+    Raises:
+        SupabaseError: If there's an error updating the researcher
+    """
+    try:
+        response = supabase.table("researchers").update(update_data).eq("id", str(researcher_id)).execute()
+        
+        if not response.data:
+            logger.error(f"Failed to update researcher with ID {researcher_id}")
+            raise SupabaseError(f"Failed to update researcher with ID {researcher_id}")
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error updating researcher with ID {researcher_id}: {str(e)}")
+        raise SupabaseError(f"Error updating researcher with ID {researcher_id}: {str(e)}")
+
+
+async def get_primary_researcher_for_paper(paper_id: UUID) -> Optional[Dict[str, Any]]:
+    """
+    Get the primary researcher associated with a paper.
+    
+    Args:
+        paper_id: The UUID of the paper
+        
+    Returns:
+        The researcher data or None if not found
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the researcher
+    """
+    try:
+        # First, get the paper to check if it has a primary_researcher_id
+        paper = await get_paper_by_id(str(paper_id))
+        if not paper:
+            logger.error(f"Paper with ID {paper_id} not found")
+            return None
+            
+        if paper.get("primary_researcher_id"):
+            return await get_researcher_by_id(UUID(paper["primary_researcher_id"]))
+            
+        # If no primary_researcher_id is set, try to find one based on the paper's authors
+        if paper.get("authors"):
+            for author in paper["authors"]:
+                # Try to find a researcher with a matching name
+                name = author.get("name", "")
+                if name:
+                    response = supabase.table("researchers").select("*").ilike("name", f"%{name}%").execute()
+                    if response.data:
+                        return response.data[0]
+        
+        return None
+    except Exception as e:
+        logger.error(f"Error retrieving primary researcher for paper {paper_id}: {str(e)}")
+        raise SupabaseError(f"Error retrieving primary researcher for paper {paper_id}: {str(e)}")
+
+
+async def create_subscription(subscription_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create a new subscription.
+    
+    Args:
+        subscription_data: Data for the subscription
+        
+    Returns:
+        The created subscription data
+        
+    Raises:
+        SupabaseError: If there's an error creating the subscription
+    """
+    try:
+        response = supabase.table("subscriptions").insert(subscription_data).execute()
+        
+        if not response.data:
+            logger.error("Failed to create subscription")
+            raise SupabaseError("Failed to create subscription")
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error creating subscription: {str(e)}")
+        raise SupabaseError(f"Error creating subscription: {str(e)}")
+
+
+async def get_subscription_by_id(subscription_id: UUID) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve a subscription by ID.
+    
+    Args:
+        subscription_id: The UUID of the subscription
+        
+    Returns:
+        The subscription data or None if not found
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the subscription
+    """
+    try:
+        response = supabase.table("subscriptions").select("*").eq("id", str(subscription_id)).execute()
+        
+        if not response.data:
+            return None
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error retrieving subscription with ID {subscription_id}: {str(e)}")
+        raise SupabaseError(f"Error retrieving subscription with ID {subscription_id}: {str(e)}")
+
+
+async def get_user_subscription(user_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve a user's active subscription.
+    
+    Args:
+        user_id: The ID of the user
+        
+    Returns:
+        The subscription data or None if not found
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the subscription
+    """
+    try:
+        response = supabase.table("subscriptions").select("*").eq("user_id", user_id).eq("status", "active").execute()
+        
+        if not response.data:
+            return None
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error retrieving subscription for user {user_id}: {str(e)}")
+        raise SupabaseError(f"Error retrieving subscription for user {user_id}: {str(e)}")
+
+
+async def update_subscription(subscription_id: UUID, update_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Update a subscription.
+    
+    Args:
+        subscription_id: The UUID of the subscription
+        update_data: The data to update
+        
+    Returns:
+        The updated subscription data
+        
+    Raises:
+        SupabaseError: If there's an error updating the subscription
+    """
+    try:
+        response = supabase.table("subscriptions").update(update_data).eq("id", str(subscription_id)).execute()
+        
+        if not response.data:
+            logger.error(f"Failed to update subscription with ID {subscription_id}")
+            raise SupabaseError(f"Failed to update subscription with ID {subscription_id}")
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error updating subscription with ID {subscription_id}: {str(e)}")
+        raise SupabaseError(f"Error updating subscription with ID {subscription_id}: {str(e)}")
+
+
+async def create_outreach_request(outreach_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create a new outreach request.
+    
+    Args:
+        outreach_data: Data for the outreach request
+        
+    Returns:
+        The created outreach request data
+        
+    Raises:
+        SupabaseError: If there's an error creating the outreach request
+    """
+    try:
+        response = supabase.table("outreach_requests").insert(outreach_data).execute()
+        
+        if not response.data:
+            logger.error("Failed to create outreach request")
+            raise SupabaseError("Failed to create outreach request")
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error creating outreach request: {str(e)}")
+        raise SupabaseError(f"Error creating outreach request: {str(e)}")
+
+
+async def get_outreach_request_by_id(request_id: UUID) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve an outreach request by ID.
+    
+    Args:
+        request_id: The UUID of the outreach request
+        
+    Returns:
+        The outreach request data or None if not found
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the outreach request
+    """
+    try:
+        response = supabase.table("outreach_requests").select("*").eq("id", str(request_id)).execute()
+        
+        if not response.data:
+            return None
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error retrieving outreach request with ID {request_id}: {str(e)}")
+        raise SupabaseError(f"Error retrieving outreach request with ID {request_id}: {str(e)}")
+
+
+async def get_outreach_requests_by_researcher_email(email: str) -> List[Dict[str, Any]]:
+    """
+    Retrieve outreach requests for a researcher by email.
+    
+    Args:
+        email: The email of the researcher
+        
+    Returns:
+        A list of outreach request data
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the outreach requests
+    """
+    try:
+        response = supabase.table("outreach_requests").select("*").eq("researcher_email", email).execute()
+        
+        return response.data
+    except Exception as e:
+        logger.error(f"Error retrieving outreach requests for researcher {email}: {str(e)}")
+        raise SupabaseError(f"Error retrieving outreach requests for researcher {email}: {str(e)}")
+
+
+async def update_outreach_request(request_id: UUID, update_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Update an outreach request.
+    
+    Args:
+        request_id: The UUID of the outreach request
+        update_data: The data to update
+        
+    Returns:
+        The updated outreach request data
+        
+    Raises:
+        SupabaseError: If there's an error updating the outreach request
+    """
+    try:
+        response = supabase.table("outreach_requests").update(update_data).eq("id", str(request_id)).execute()
+        
+        if not response.data:
+            logger.error(f"Failed to update outreach request with ID {request_id}")
+            raise SupabaseError(f"Failed to update outreach request with ID {request_id}")
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error updating outreach request with ID {request_id}: {str(e)}")
+        raise SupabaseError(f"Error updating outreach request with ID {request_id}: {str(e)}")
+
+
+async def create_session(session_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create a new consultation session.
+    
+    Args:
+        session_data: Data for the session
+        
+    Returns:
+        The created session data
+        
+    Raises:
+        SupabaseError: If there's an error creating the session
+    """
+    try:
+        response = supabase.table("sessions").insert(session_data).execute()
+        
+        if not response.data:
+            logger.error("Failed to create session")
+            raise SupabaseError("Failed to create session")
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error creating session: {str(e)}")
+        raise SupabaseError(f"Error creating session: {str(e)}")
+
+
+async def get_session_by_id(session_id: UUID) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve a session by ID.
+    
+    Args:
+        session_id: The UUID of the session
+        
+    Returns:
+        The session data or None if not found
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the session
+    """
+    try:
+        response = supabase.table("sessions").select("*").eq("id", str(session_id)).execute()
+        
+        if not response.data:
+            return None
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error retrieving session with ID {session_id}: {str(e)}")
+        raise SupabaseError(f"Error retrieving session with ID {session_id}: {str(e)}")
+
+
+async def get_sessions_by_user(user_id: str) -> List[Dict[str, Any]]:
+    """
+    Retrieve sessions for a user.
+    
+    Args:
+        user_id: The ID of the user
+        
+    Returns:
+        A list of session data
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the sessions
+    """
+    try:
+        response = supabase.table("sessions").select("*").eq("user_id", user_id).order("start_time", options={"ascending": False}).execute()
+        
+        return response.data
+    except Exception as e:
+        logger.error(f"Error retrieving sessions for user {user_id}: {str(e)}")
+        raise SupabaseError(f"Error retrieving sessions for user {user_id}: {str(e)}")
+
+
+async def get_sessions_by_researcher(researcher_id: UUID) -> List[Dict[str, Any]]:
+    """
+    Retrieve sessions for a researcher.
+    
+    Args:
+        researcher_id: The UUID of the researcher
+        
+    Returns:
+        A list of session data
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the sessions
+    """
+    try:
+        response = supabase.table("sessions").select("*").eq("researcher_id", str(researcher_id)).order("start_time", options={"ascending": False}).execute()
+        
+        return response.data
+    except Exception as e:
+        logger.error(f"Error retrieving sessions for researcher {researcher_id}: {str(e)}")
+        raise SupabaseError(f"Error retrieving sessions for researcher {researcher_id}: {str(e)}")
+
+
+async def update_session(session_id: UUID, update_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Update a session.
+    
+    Args:
+        session_id: The UUID of the session
+        update_data: The data to update
+        
+    Returns:
+        The updated session data
+        
+    Raises:
+        SupabaseError: If there's an error updating the session
+    """
+    try:
+        response = supabase.table("sessions").update(update_data).eq("id", str(session_id)).execute()
+        
+        if not response.data:
+            logger.error(f"Failed to update session with ID {session_id}")
+            raise SupabaseError(f"Failed to update session with ID {session_id}")
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error updating session with ID {session_id}: {str(e)}")
+        raise SupabaseError(f"Error updating session with ID {session_id}: {str(e)}")
+
+
+async def create_payment(payment_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create a new payment record.
+    
+    Args:
+        payment_data: Data for the payment
+        
+    Returns:
+        The created payment data
+        
+    Raises:
+        SupabaseError: If there's an error creating the payment
+    """
+    try:
+        response = supabase.table("payments").insert(payment_data).execute()
+        
+        if not response.data:
+            logger.error("Failed to create payment")
+            raise SupabaseError("Failed to create payment")
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error creating payment: {str(e)}")
+        raise SupabaseError(f"Error creating payment: {str(e)}")
+
+
+async def get_payment_by_id(payment_id: UUID) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve a payment by ID.
+    
+    Args:
+        payment_id: The UUID of the payment
+        
+    Returns:
+        The payment data or None if not found
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the payment
+    """
+    try:
+        response = supabase.table("payments").select("*").eq("id", str(payment_id)).execute()
+        
+        if not response.data:
+            return None
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error retrieving payment with ID {payment_id}: {str(e)}")
+        raise SupabaseError(f"Error retrieving payment with ID {payment_id}: {str(e)}")
+
+
+async def get_payments_by_user(user_id: str) -> List[Dict[str, Any]]:
+    """
+    Retrieve payments for a user.
+    
+    Args:
+        user_id: The ID of the user
+        
+    Returns:
+        A list of payment data
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the payments
+    """
+    try:
+        response = supabase.table("payments").select("*").eq("user_id", user_id).order("created_at", options={"ascending": False}).execute()
+        
+        return response.data
+    except Exception as e:
+        logger.error(f"Error retrieving payments for user {user_id}: {str(e)}")
+        raise SupabaseError(f"Error retrieving payments for user {user_id}: {str(e)}")
+
+
+async def update_payment(payment_id: UUID, update_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Update a payment.
+    
+    Args:
+        payment_id: The UUID of the payment
+        update_data: The data to update
+        
+    Returns:
+        The updated payment data
+        
+    Raises:
+        SupabaseError: If there's an error updating the payment
+    """
+    try:
+        response = supabase.table("payments").update(update_data).eq("id", str(payment_id)).execute()
+        
+        if not response.data:
+            logger.error(f"Failed to update payment with ID {payment_id}")
+            raise SupabaseError(f"Failed to update payment with ID {payment_id}")
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error updating payment with ID {payment_id}: {str(e)}")
+        raise SupabaseError(f"Error updating payment with ID {payment_id}: {str(e)}")
+
+
+async def create_review(review_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create a new review.
+    
+    Args:
+        review_data: Data for the review
+        
+    Returns:
+        The created review data
+        
+    Raises:
+        SupabaseError: If there's an error creating the review
+    """
+    try:
+        response = supabase.table("reviews").insert(review_data).execute()
+        
+        if not response.data:
+            logger.error("Failed to create review")
+            raise SupabaseError("Failed to create review")
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error creating review: {str(e)}")
+        raise SupabaseError(f"Error creating review: {str(e)}")
+
+
+async def get_review_by_id(review_id: UUID) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve a review by ID.
+    
+    Args:
+        review_id: The UUID of the review
+        
+    Returns:
+        The review data or None if not found
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the review
+    """
+    try:
+        response = supabase.table("reviews").select("*").eq("id", str(review_id)).execute()
+        
+        if not response.data:
+            return None
+            
+        return response.data[0]
+    except Exception as e:
+        logger.error(f"Error retrieving review with ID {review_id}: {str(e)}")
+        raise SupabaseError(f"Error retrieving review with ID {review_id}: {str(e)}")
+
+
+async def get_reviews_by_researcher(researcher_id: UUID) -> List[Dict[str, Any]]:
+    """
+    Retrieve reviews for a researcher.
+    
+    Args:
+        researcher_id: The UUID of the researcher
+        
+    Returns:
+        A list of review data
+        
+    Raises:
+        SupabaseError: If there's an error retrieving the reviews
+    """
+    try:
+        response = supabase.table("reviews").select("*").eq("researcher_id", str(researcher_id)).order("created_at", options={"ascending": False}).execute()
+        
+        return response.data
+    except Exception as e:
+        logger.error(f"Error retrieving reviews for researcher {researcher_id}: {str(e)}")
+        raise SupabaseError(f"Error retrieving reviews for researcher {researcher_id}: {str(e)}") 

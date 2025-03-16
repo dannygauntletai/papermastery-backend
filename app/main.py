@@ -10,19 +10,20 @@ if openai_key:
     os.environ["OPENAI_API_KEY"] = openai_key
     print(f"Set OpenAI API key in environment (prefix: {openai_key[:8]}...)")
 
-from fastapi import FastAPI, Depends, status, Query
+from fastapi import FastAPI, Depends, status, Query, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.routing import APIRoute
 from app.dependencies import validate_environment
-from app.api.v1.endpoints.papers import router as papers_router
-from app.api.v1.endpoints.chat import router as chat_router
-from app.api.v1.endpoints.learning import router as learning_router
-from app.api.v1.endpoints.waiting_list import router as waiting_list_router
+from app.api.v1.endpoints import chat, papers, learning, waiting_list, consulting
+from app.core.config import get_settings
+from app.core.logger import get_logger
 import inspect
 from typing import Callable, Dict, Any, List, Optional
 import time
 
+settings = get_settings()
+logger = get_logger(__name__)
 
 # Use the standard APIRoute instead of a patched version
 app = FastAPI(
@@ -129,11 +130,12 @@ async def health_check():
     }
 
 
-# Include API routers - use standard APIRoute
-app.include_router(papers_router, prefix="/api/v1")
-app.include_router(chat_router, prefix="/api/v1")
-app.include_router(learning_router, prefix="/api/v1")
-app.include_router(waiting_list_router, prefix="/api/v1")
+# Include routers for all endpoints
+app.include_router(papers.router, prefix=f"{settings.API_V1_STR}")
+app.include_router(chat.router, prefix=f"{settings.API_V1_STR}")
+app.include_router(learning.router, prefix=f"{settings.API_V1_STR}")
+app.include_router(waiting_list.router, prefix=f"{settings.API_V1_STR}")
+app.include_router(consulting.router, prefix=f"{settings.API_V1_STR}")
 
 # Custom OpenAPI schema to properly document the API
 def custom_openapi():
