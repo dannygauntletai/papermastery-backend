@@ -746,6 +746,17 @@ async def store_learning_material(material_data: Dict[str, Any], use_mock_for_te
         return material_id
     
     try:
+        # Handle legacy video data if present
+        data = material_data.get("data", {})
+        
+        # If this is a video type and videos field is present, move it to data
+        if material_data.get("type") == "video" and material_data.get("videos"):
+            logger.info("Moving videos from videos field to data field")
+            # For backward compatibility, if we're storing multiple videos in one item
+            if isinstance(material_data.get("videos"), list) and len(material_data.get("videos")) > 0:
+                data["videos"] = material_data.get("videos")
+                logger.info(f"Moved {len(material_data.get('videos'))} videos to data.videos")
+        
         # Use our ItemCreate model for validation
         item_data = {
             "id": material_id,
@@ -753,9 +764,8 @@ async def store_learning_material(material_data: Dict[str, Any], use_mock_for_te
             "type": material_data.get("type"),
             "level": material_data.get("level", "beginner"),
             "category": material_data.get("category", "general"),
-            "data": material_data.get("data", {}),
-            "order": material_data.get("order", 0),
-            "videos": material_data.get("videos")
+            "data": data,
+            "order": material_data.get("order", 0)
         }
         
         # Insert the item into the database
@@ -844,9 +854,11 @@ async def get_materials_for_paper(paper_id: str, level: Optional[str] = None, us
                         logger.info(f"  Data keys: {vm['data'].keys()}")
                         if "videos" in vm["data"]:
                             logger.info(f"  Videos in data: {len(vm['data']['videos'])}")
+                        elif "video" in vm["data"]:
+                            logger.info(f"  Single video in data field")
                     
-                    # Check for videos at top level
-                    if "videos" in vm:
+                    # Check for videos at top level (legacy format)
+                    if "videos" in vm and vm["videos"] is not None:
                         logger.info(f"  Videos at top level: {len(vm['videos'])}")
             
         return result.data
@@ -1002,7 +1014,10 @@ async def generate_learning_path(paper_id: str, user_id: Optional[str] = None, u
                         if "data" in material and "videos" in material["data"]:
                             videos_data = material["data"]["videos"]
                             logger.info(f"Found {len(videos_data)} videos in material data")
-                        
+                        # Check for single video in data.video (new format)
+                        elif "data" in material and "video" in material["data"]:
+                            videos_data = [material["data"]["video"]]
+                            logger.info(f"Found single video in data.video field")
                         # Check for videos at top level
                         elif "videos" in material:
                             videos_data = material["videos"]
@@ -1123,43 +1138,52 @@ async def generate_learning_path(paper_id: str, user_id: Optional[str] = None, u
                 order_counter += 1
                 logger.info(f"Stored {content_type} material with ID {text_item_id} for level {level_name}")
             
-            # Add additional materials for each difficulty level
-            for level, level_name in enumerate(LEVELS, 1):
-                # Add video items (limit to 3 per level)
-                if videos:
+            # Store videos as individual items (only once, not per level)
+            if videos:
+                logger.info(f"Storing {len(videos)} videos as individual items")
+                
+                for i, video in enumerate(videos[:3]):  # Limit to 3 videos
+                    # Create a unique ID for the video item
+                    video_id = f"{paper_id}-video-{uuid.uuid4().hex[:8]}"
+                    
+                    # Create video material data with the video in the data field
                     video_material_data = {
                         "paper_id": paper_id,
                         "type": "video",
-                        "level": level_name,
+                        "level": "intermediate",  # All videos are set to intermediate level
                         "category": "general",
                         "data": {
-                            "title": "Supplemental Videos",
-                            "description": "Educational videos to enhance understanding"
+                            "title": video.get("title", "Educational Video"),
+                            "description": video.get("description", "Educational video to enhance understanding"),
+                            "video": video  # Store the video data in the data field
                         },
-                        "order": order_counter,
-                        "videos": videos[:3]  # Limit to 3 videos
+                        "order": order_counter
                     }
                     
                     try:
+                        # Store the video as an individual item
                         video_item_id = await store_learning_material(video_material_data, use_mock_for_tests=use_mock_for_tests)
                         stored_item_ids.append(video_item_id)
                         order_counter += 1
                         
                         # Add a video learning item
                         video_item = LearningItem(
-                            id=f"{paper_id}-video-{level}",
+                            id=video_id,
                             paper_id=paper_id,
                             type=LearningItemType.VIDEO,
-                            title="Educational Videos",
-                            content="Watch these videos to enhance your understanding",
-                            metadata={"videos": videos[:3]},
-                            difficulty_level=level
+                            title=video.get("title", "Educational Video"),
+                            content=video.get("description", "Watch this video to enhance your understanding"),
+                            metadata={"video": video},
+                            difficulty_level=get_difficulty_level("intermediate")  # Set to intermediate level
                         )
                         
                         learning_items.append(video_item)
+                        logger.info(f"Stored video item with ID {video_item_id}")
                     except Exception as e:
                         logger.error(f"Error storing video material: {str(e)}", exc_info=True)
-                
+            
+            # Add additional materials for each difficulty level
+            for level, level_name in enumerate(LEVELS, 1):
                 # Store flashcards for intermediate and advanced levels
                 if level >= 2:
                     try:
@@ -1399,6 +1423,18 @@ async def get_learning_path(paper_id: str) -> Dict[str, Any]:
             # Add video times if available
             if material.get("videos"):
                 for video in material.get("videos", []):
+                    duration = video.get("duration", "10:00")
+                    mins, secs = map(int, duration.split(":"))
+                    total_time += mins * 60 + secs
+            # Handle new video format (single video in data.video)
+            elif material.get("type") == "video" and material.get("data", {}).get("video"):
+                video = material.get("data", {}).get("video", {})
+                duration = video.get("duration", "10:00")
+                mins, secs = map(int, duration.split(":"))
+                total_time += mins * 60 + secs
+            # Handle legacy video format (multiple videos in data.videos)
+            elif material.get("type") == "video" and material.get("data", {}).get("videos"):
+                for video in material.get("data", {}).get("videos", []):
                     duration = video.get("duration", "10:00")
                     mins, secs = map(int, duration.split(":"))
                     total_time += mins * 60 + secs
