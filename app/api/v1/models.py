@@ -64,7 +64,7 @@ class PaperMetadata(BaseModel):
     # Core metadata
     title: str
     authors: List[Author]
-    abstract: str 
+    abstract: Optional[str] = None
     publication_date: datetime
     
     # Additional metadata
@@ -89,7 +89,7 @@ class PaperBase(BaseModel):
     # Core metadata
     title: str
     authors: List[Author]
-    abstract: str
+    abstract: Optional[str] = None
     publication_date: datetime
     full_text: Optional[str] = None
     
