@@ -41,6 +41,19 @@ async def generate_summaries(
     try:
         logger.info(f"Generating summaries for paper ID: {paper_id}")
         
+        # Ensure we have valid values for all parameters
+        if full_text is None:
+            logger.warning(f"Full text is None for paper ID: {paper_id}, using placeholder text")
+            full_text = "Paper text not available"
+            
+        if title is None:
+            logger.warning(f"Title is None for paper ID: {paper_id}, using placeholder title")
+            title = "Untitled Paper"
+            
+        if abstract is None:
+            logger.warning(f"Abstract is None for paper ID: {paper_id}, using placeholder abstract")
+            abstract = "Abstract not available"
+        
         # Load and render the unified summary template
         template = env.get_template('prompts/unified_summary.j2')
         prompt = template.render(
