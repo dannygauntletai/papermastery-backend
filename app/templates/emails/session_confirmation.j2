@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Your Paper Mastery Consultation Session Confirmation</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            color: #4F46E5;
+            margin-bottom: 10px;
+        }
+        .content {
+            margin-bottom: 30px;
+        }
+        .session-details {
+            background-color: #F3F4F6;
+            padding: 20px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+        .session-details h2 {
+            margin-top: 0;
+            color: #4F46E5;
+        }
+        .session-details p {
+            margin: 10px 0;
+        }
+        .session-details strong {
+            color: #111827;
+        }
+        .zoom-button {
+            display: inline-block;
+            background-color: #4F46E5;
+            color: white;
+            text-decoration: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            font-size: 14px;
+            color: #6B7280;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>{{ platform_name }}</h1>
+        <p>Your consultation session has been confirmed!</p>
+    </div>
+    
+    <div class="content">
+        <p>Hello{% if user_name %} {{ user_name }}{% endif %},</p>
+        
+        <p>
+            Your consultation session with {% if researcher_name %}<strong>{{ researcher_name }}</strong>{% else %}a researcher{% endif %}
+            {% if paper_title %}about "<strong>{{ paper_title }}</strong>"{% endif %} has been confirmed.
+        </p>
+        
+        <div class="session-details">
+            <h2>Session Details</h2>
+            <p><strong>Date:</strong> {{ date }}</p>
+            <p><strong>Time:</strong> {{ time }}</p>
+            <p><strong>Session ID:</strong> {{ session_id }}</p>
+            
+            {% if zoom_link %}
+            <p><strong>Zoom Link:</strong></p>
+            <p style="text-align: center;">
+                <a href="{{ zoom_link }}" class="zoom-button">Join Zoom Meeting</a>
+            </p>
+            {% endif %}
+        </div>
+        
+        <h3>Preparing for Your Session</h3>
+        <ul>
+            <li>Test your camera and microphone before the session</li>
+            <li>Prepare any specific questions you want to ask</li>
+            <li>Join the session 5 minutes early</li>
+            <li>Have paper details handy for reference</li>
+        </ul>
+        
+        <p>
+            If you need to cancel or reschedule, please do so at least 24 hours in advance
+            through your {{ platform_name }} dashboard.
+        </p>
+    </div>
+    
+    <div class="footer">
+        <p>
+            If you have any questions or need assistance, please contact us at 
+            <a href="mailto:{{ support_email }}">{{ support_email }}</a>.
+        </p>
+        <p>&copy; {{ current_year }} {{ platform_name }}. All rights reserved.</p>
+    </div>
+</body>
+</html> 

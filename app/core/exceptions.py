@@ -4,6 +4,12 @@ class ArXivMasteryException(Exception):
     """Base exception for all ArXiv Mastery app exceptions."""
     pass
 
+class ServiceError(ArXivMasteryException):
+    """Base exception for service-level errors."""
+    def __init__(self, message: str):
+        self.message = f"Service error: {message}"
+        super().__init__(self.message)
+
 class ExternalAPIError(ArXivMasteryException):
     """Base exception for errors from external APIs."""
     def __init__(self, message: str):
@@ -92,6 +98,11 @@ def http_exception_handler(exc):
     elif isinstance(exc, (ArXivAPIError, ExternalAPIError)):
         return HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=exc.message
+        )
+    elif isinstance(exc, ServiceError):
+        return HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=exc.message
         )
     elif isinstance(exc, PDFExtractionError):

@@ -1,7 +1,7 @@
 from typing import Dict, Any, List, Optional, Union
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
-import datetime
+import datetime as dt
 
 from app.api.v1.models import (
     ResearcherCreate, 
@@ -15,6 +15,7 @@ from app.api.v1.models import (
     SubscriptionResponse
 )
 from app.core.logger import get_logger
+from app.core.config import get_settings
 from app.services.data_collection_orchestrator import (
     collect_researcher_data,
     batch_collect_researcher_data,
@@ -29,18 +30,37 @@ from app.services.consulting_service import (
     book_session,
     update_session_status,
     get_researcher_sessions,
-    get_user_sessions,
     create_user_subscription
 )
 from app.database.supabase_client import (
-    get_researcher_by_email
+    get_researcher_by_email,
+    get_paper_by_id,
+    get_user_by_id,
+    update_outreach_request
 )
 from app.core.exceptions import SupabaseError
+from app.services.session_service import (
+    create_consultation_session,
+    get_session,
+    get_researcher_consultations,
+    get_user_consultations,
+    reschedule_session
+)
+from app.services.zoom_service import create_zoom_meeting
+from app.services.email_service import (
+    send_researcher_outreach_email,
+    generate_registration_token
+)
+import stripe
+from app.core.auth import get_current_user
 
 logger = get_logger(__name__)
+settings = get_settings()
 
 router = APIRouter(prefix="/consulting", tags=["consulting"])
 
+# Configure Stripe
+stripe.api_key = settings.STRIPE_SECRET_KEY
 
 @router.post("/researchers/collect", response_model=ResearcherCollectionResponse, status_code=status.HTTP_200_OK)
 async def collect_researcher_data_endpoint(
@@ -339,7 +359,7 @@ async def handle_researcher_collection(
     """
     try:
         # Record start time
-        start_time = datetime.datetime.now()
+        start_time = dt.datetime.now()
         
         # Log background task started
         logger.info(f"Background task started for researcher collection: {request.name}")
@@ -367,7 +387,7 @@ async def handle_researcher_collection(
         logger.info(f"Successfully collected data for researcher {request.name}")
         
         # Calculate processing time
-        processing_time = datetime.datetime.now() - start_time
+        processing_time = dt.datetime.now() - start_time
         processing_seconds = processing_time.total_seconds()
         
         # If we have researcher data in the result, return it in the expected format
@@ -414,7 +434,7 @@ async def handle_researcher_collection(
             "name": request.name,
             "affiliation": request.affiliation,
             "error_message": str(e),
-            "processing_started": datetime.datetime.now().isoformat()
+            "processing_started": dt.datetime.now().isoformat()
         }
 
 
@@ -463,4 +483,538 @@ async def handle_institution_collection(
         return results
     except Exception as e:
         logger.error(f"Error collecting for institution {institution}: {str(e)}")
-        raise e 
+        raise e
+
+
+@router.post("/outreach", response_model=OutreachRequestResponse)
+async def create_outreach_request(
+    request: OutreachRequestCreate,
+    background_tasks: BackgroundTasks,
+    current_user: Any = Depends(get_current_user)
+) -> OutreachRequestResponse:
+    """
+    Create a new researcher outreach request.
+    
+    This endpoint creates a new request to invite a researcher to join the platform:
+    1. Validates that the user has an active subscription
+    2. Creates an outreach request record
+    3. Generates a registration token
+    4. Sends an email to the researcher with the registration link
+    
+    The response includes the status of the outreach request.
+    """
+    try:
+        # Check if user is subscribed
+        user_id = current_user.id
+        
+        # Override the user_id from the request with the authenticated user
+        request_data = request.dict()
+        request_data["user_id"] = user_id
+        
+        # Create outreach request
+        outreach_request = await request_researcher_outreach(request_data)
+        
+        if not outreach_request:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create outreach request"
+            )
+            
+        # Generate token and send invitation email in background
+        background_tasks.add_task(
+            handle_outreach_email,
+            outreach_request
+        )
+        
+        return OutreachRequestResponse(
+            success=True,
+            message="Outreach request created and email sent to researcher",
+            data=outreach_request
+        )
+        
+    except Exception as e:
+        logger.error(f"Error creating outreach request: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating outreach request: {str(e)}"
+        )
+
+
+@router.post("/sessions", response_model=SessionResponse)
+async def create_session(
+    request: SessionCreate,
+    current_user: Any = Depends(get_current_user)
+) -> SessionResponse:
+    """
+    Book a consultation session with a researcher.
+    
+    This endpoint creates a new consultation session:
+    1. Validates the time slot availability
+    2. Creates a session record
+    3. Generates a Zoom meeting link
+    4. Sends confirmation emails
+    
+    The response includes the created session details.
+    """
+    try:
+        # Override the user_id from the request with the authenticated user
+        session_data = request.dict()
+        session_data["user_id"] = current_user.id
+        
+        # Create session
+        session = await create_consultation_session(session_data)
+        
+        return SessionResponse(
+            success=True,
+            message="Session created successfully",
+            data=session
+        )
+        
+    except Exception as e:
+        logger.error(f"Error creating session: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating session: {str(e)}"
+        )
+
+
+@router.get("/sessions", response_model=List[Dict[str, Any]])
+async def get_user_sessions(
+    current_user: Any = Depends(get_current_user)
+) -> List[Dict[str, Any]]:
+    """
+    Get all sessions for the authenticated user.
+    
+    This endpoint retrieves all consultation sessions for the current user,
+    including scheduled, completed, and canceled sessions.
+    """
+    try:
+        sessions = await get_user_consultations(current_user.id)
+        return sessions
+        
+    except Exception as e:
+        logger.error(f"Error retrieving user sessions: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving sessions: {str(e)}"
+        )
+
+
+@router.get("/sessions/{session_id}", response_model=Dict[str, Any])
+async def get_session_details(
+    session_id: UUID,
+    current_user = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """
+    Get details of a specific session.
+    
+    This endpoint retrieves details for a specific consultation session,
+    including the Zoom link, participants, and status.
+    """
+    try:
+        session = await get_session(session_id)
+        
+        # Check if user has access to this session
+        if str(session.get("user_id")) != str(current_user.id) and not current_user.is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to access this session"
+            )
+            
+        return session
+        
+    except Exception as e:
+        logger.error(f"Error retrieving session: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving session: {str(e)}"
+        )
+
+
+@router.get("/researchers/{researcher_id}/availability", response_model=Dict[str, Any])
+async def get_researcher_availability(
+    researcher_id: UUID,
+    date: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Get researcher's available time slots.
+    
+    This endpoint retrieves available time slots for a specific researcher,
+    optionally filtered by date.
+    """
+    try:
+        # Get researcher
+        researcher = await get_researcher(researcher_id)
+        
+        if not researcher:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Researcher not found: {researcher_id}"
+            )
+            
+        # Get availability from researcher data
+        availability = researcher.get("availability", {})
+        
+        # Filter by date if provided
+        if date:
+            # Format may be like "2023-04-20"
+            day_of_week = dt.datetime.fromisoformat(date).strftime("%A").lower()
+            filtered_availability = {
+                date: availability.get(day_of_week, [])
+            }
+            return {"availability": filtered_availability}
+        else:
+            return {"availability": availability}
+            
+    except Exception as e:
+        logger.error(f"Error retrieving researcher availability: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving availability: {str(e)}"
+        )
+
+
+@router.post("/sessions/{session_id}/cancel", response_model=SessionResponse)
+async def cancel_session(
+    session_id: UUID,
+    current_user = Depends(get_current_user)
+) -> SessionResponse:
+    """
+    Cancel a scheduled session.
+    
+    This endpoint cancels a scheduled consultation session:
+    1. Validates that the session is still scheduled (not completed)
+    2. Updates the session status to "canceled"
+    3. Cancels the associated Zoom meeting
+    4. Notifies participants
+    
+    Restrictions:
+    - Only the session owner or an admin can cancel a session
+    - Sessions must be canceled at least 24 hours in advance
+    """
+    try:
+        # Get session
+        session = await get_session(session_id)
+        
+        # Check if user has permission to cancel
+        if str(session.get("user_id")) != str(current_user.id) and not current_user.is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to cancel this session"
+            )
+            
+        # Check if session can be canceled
+        if session.get("status") != "scheduled":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot cancel a session with status: {session.get('status')}"
+            )
+            
+        # Check if session is less than 24 hours away
+        start_time = session.get("start_time")
+        if isinstance(start_time, str):
+            start_time = dt.datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+            
+        if (start_time - dt.datetime.now()).total_seconds() < (24 * 60 * 60):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Sessions must be canceled at least 24 hours in advance"
+            )
+            
+        # Cancel session
+        updated_session = await update_session_status(session_id, "canceled")
+        
+        return SessionResponse(
+            success=True,
+            message="Session canceled successfully",
+            data=updated_session
+        )
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error canceling session: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error canceling session: {str(e)}"
+        )
+
+
+@router.post("/subscriptions", response_model=SubscriptionResponse)
+async def create_subscription(
+    current_user = Depends(get_current_user)
+) -> SubscriptionResponse:
+    """
+    Create a new consulting subscription for the current user.
+    
+    This endpoint creates a new monthly subscription for outreach requests:
+    1. Creates a Stripe subscription for the user
+    2. Returns the client secret for the payment
+    
+    The response includes the subscription details and payment information.
+    """
+    try:
+        # Create a subscription
+        subscription = await create_user_subscription(current_user.id)
+        
+        return SubscriptionResponse(
+            success=True,
+            message="Subscription created successfully",
+            data=subscription
+        )
+        
+    except Exception as e:
+        logger.error(f"Error creating subscription: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating subscription: {str(e)}"
+        )
+
+
+@router.post("/payments/intent", response_model=Dict[str, Any])
+async def create_payment_intent(
+    data: Dict[str, Any],
+    current_user = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """
+    Create a Stripe payment intent for a session or subscription.
+    
+    This endpoint creates a Stripe payment intent:
+    1. Validates the payment type (session or subscription)
+    2. Calculates the amount based on the researcher's rate or subscription fee
+    3. Creates a payment intent
+    4. Returns the client secret for the payment
+    
+    Required data:
+    - type: "session" or "subscription"
+    - session_id: UUID (required for session payments)
+    """
+    try:
+        payment_type = data.get("type")
+        
+        if payment_type not in ["session", "subscription"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid payment type. Must be 'session' or 'subscription'"
+            )
+            
+        # Calculate amount based on payment type
+        amount = 0
+        metadata = {}
+        
+        if payment_type == "session":
+            session_id = data.get("session_id")
+            
+            if not session_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="session_id is required for session payments"
+                )
+                
+            # Get session
+            session = await get_session(session_id)
+            
+            # Check if user has permission to pay for this session
+            if str(session.get("user_id")) != str(current_user.id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You don't have permission to pay for this session"
+                )
+                
+            # Get researcher rate
+            researcher_id = session.get("researcher_id")
+            researcher = await get_researcher(researcher_id)
+            
+            if not researcher:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Researcher not found: {researcher_id}"
+                )
+                
+            hourly_rate = researcher.get("rate", 0)
+            
+            # Calculate session duration in hours
+            start_time = session.get("start_time")
+            end_time = session.get("end_time")
+            
+            if isinstance(start_time, str):
+                start_time = dt.datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                
+            if isinstance(end_time, str):
+                end_time = dt.datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+                
+            duration_hours = (end_time - start_time).total_seconds() / 3600
+            
+            # Calculate amount in cents
+            amount = int(hourly_rate * duration_hours * 100)
+            
+            # Add metadata
+            metadata = {
+                "type": "session",
+                "session_id": str(session_id),
+                "user_id": str(current_user.id),
+                "researcher_id": str(researcher_id)
+            }
+            
+        elif payment_type == "subscription":
+            # Use subscription price from settings
+            amount = int(float(settings.CONSULTING_SUBSCRIPTION_PRICE) * 100)
+            
+            # Add metadata
+            metadata = {
+                "type": "subscription",
+                "user_id": str(current_user.id)
+            }
+            
+        # Create payment intent
+        payment_intent = stripe.PaymentIntent.create(
+            amount=amount,
+            currency="usd",
+            metadata=metadata,
+            description=f"Paper Mastery {payment_type} payment"
+        )
+        
+        return {
+            "client_secret": payment_intent.client_secret,
+            "amount": amount / 100,  # Return amount in dollars for display
+            "type": payment_type
+        }
+        
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Stripe error: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Error creating payment intent: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating payment intent: {str(e)}"
+        )
+
+
+async def handle_outreach_email(outreach_request: Dict[str, Any]) -> None:
+    """
+    Handle sending an outreach email to a researcher.
+    
+    Args:
+        outreach_request: Outreach request data
+        
+    Returns:
+        None
+    """
+    try:
+        # Get paper data if provided
+        paper_title = None
+        if outreach_request.get("paper_id"):
+            paper = await get_paper_by_id(str(outreach_request.get("paper_id")))
+            if paper:
+                paper_title = paper.get("title")
+                
+        # Get user data
+        user_name = None
+        if outreach_request.get("user_id"):
+            user = await get_user_by_id(str(outreach_request.get("user_id")))
+            if user:
+                user_name = user.get("name")
+                
+        # Generate registration token
+        outreach_id = outreach_request.get("id")
+        researcher_email = outreach_request.get("researcher_email")
+        
+        token = generate_registration_token(researcher_email, str(outreach_id))
+        
+        # Send outreach email
+        email_sent = await send_researcher_outreach_email(
+            to_email=researcher_email,
+            token=token,
+            paper_title=paper_title,
+            user_name=user_name
+        )
+        
+        # Update outreach request status
+        if email_sent:
+            await update_outreach_request(
+                outreach_id=str(outreach_id),
+                update_data={"status": "pending"}
+            )
+        else:
+            await update_outreach_request(
+                outreach_id=str(outreach_id),
+                update_data={"status": "email_failed"}
+            )
+            
+    except Exception as e:
+        logger.error(f"Error sending outreach email: {str(e)}")
+        # Update outreach request status
+        if outreach_request and outreach_request.get("id"):
+            await update_outreach_request(
+                outreach_id=str(outreach_request.get("id")),
+                update_data={"status": "email_failed"}
+            )
+
+
+@router.post("/sessions/{session_id}/accept", response_model=SessionResponse)
+async def accept_session(
+    session_id: UUID,
+    current_user = Depends(get_current_user)
+) -> SessionResponse:
+    """
+    Accept a session as a researcher.
+    
+    This endpoint allows a researcher to accept a session request:
+    1. Validates that the current user is the researcher for this session
+    2. Updates the session status to "confirmed" if it's "pending"
+    3. Sends confirmation emails
+    
+    The response includes the updated session details.
+    """
+    try:
+        # Get session
+        session = await get_session(session_id)
+        
+        # Get researcher
+        researcher_id = session.get("researcher_id")
+        researcher = await get_researcher(researcher_id)
+        
+        # Check if the current user is the researcher or has a linked account
+        if not researcher or (
+            str(researcher.get("user_id")) != str(current_user.id) and 
+            not current_user.is_admin
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to accept this session"
+            )
+            
+        # Check if session is in a valid state
+        if session.get("status") != "scheduled":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot accept a session with status: {session.get('status')}"
+            )
+            
+        # Update session status (no change to status, potentially add zoom link in future)
+        updated_session = await update_session_status(
+            session_id=session_id, 
+            status="scheduled"
+        )
+        
+        # Return success response
+        return SessionResponse(
+            success=True,
+            message="Session accepted successfully",
+            data=updated_session
+        )
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error accepting session: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error accepting session: {str(e)}"
+        ) 

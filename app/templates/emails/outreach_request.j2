@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Join Paper Mastery as a Consulting Researcher</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            color: #4F46E5;
+            margin-bottom: 10px;
+        }
+        .content {
+            margin-bottom: 30px;
+        }
+        .cta-button {
+            display: inline-block;
+            background-color: #4F46E5;
+            color: white;
+            text-decoration: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            font-size: 14px;
+            color: #6B7280;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>{{ platform_name }}</h1>
+        <p>{{ platform_description }}</p>
+    </div>
+    
+    <div class="content">
+        <p>Hello,</p>
+        
+        <p>
+            We're reaching out because <strong>{{ user_name }}</strong> is interested in consulting with you 
+            {% if paper_title %}about your paper "<strong>{{ paper_title }}</strong>"{% endif %}.
+        </p>
+        
+        <p>
+            {{ platform_name }} connects researchers like you with readers who want to gain deeper 
+            insights beyond what they can learn from reading papers alone. As an expert in your field, 
+            your knowledge is valuable!
+        </p>
+        
+        <p><strong>Why join {{ platform_name }} as a consulting researcher?</strong></p>
+        
+        <ul>
+            <li>Set your own hourly rate and availability</li>
+            <li>Receive 95%+ of session fees</li>
+            <li>Connect with interested readers</li>
+            <li>Help others understand your research</li>
+            <li>Simple scheduling and video conferencing integration</li>
+        </ul>
+        
+        <p>
+            To create your researcher profile and start accepting consultation requests, 
+            click the button below:
+        </p>
+        
+        <p style="text-align: center;">
+            <a href="{{ registration_url }}" class="cta-button">Create Researcher Profile</a>
+        </p>
+        
+        <p>
+            This link will expire in 14 days. If you're not interested in joining the platform, 
+            you can simply ignore this email.
+        </p>
+    </div>
+    
+    <div class="footer">
+        <p>&copy; {{ current_year }} {{ platform_name }}. All rights reserved.</p>
+        <p>
+            If you believe you received this email in error, please disregard it. 
+            This is not a newsletter or subscription - this email was sent specifically 
+            because a user requested to consult with you.
+        </p>
+    </div>
+</body>
+</html> 
