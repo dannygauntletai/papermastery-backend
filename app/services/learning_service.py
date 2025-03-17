@@ -1323,7 +1323,7 @@ async def generate_text_content(paper_id: str) -> List[Dict[str, Any]]:
         ValueError: If paper not found or PDF not available
         Exception: If content generation fails
     """
-    from app.services.llm_service import mock_generate_learning_content_json
+    from app.services.llm_service import generate_learning_content_json_with_pdf
     from app.templates.prompts.learning_content import get_learning_content_prompt
     from app.services.pdf_service import get_paper_pdf
     from uuid import UUID
@@ -1346,8 +1346,7 @@ async def generate_text_content(paper_id: str) -> List[Dict[str, Any]]:
     prompt = get_learning_content_prompt(title=title, abstract=abstract, pdf_path=pdf_path)
     
     # Generate content using the LLM
-    # For now, use the mock function until we implement a proper replacement
-    content = await mock_generate_learning_content_json(prompt)
+    content = await generate_learning_content_json_with_pdf(prompt, pdf_path)
     
     # Organize content by difficulty level
     text_content = []
@@ -1388,7 +1387,6 @@ async def generate_text_content(paper_id: str) -> List[Dict[str, Any]]:
         raise ValueError("Failed to generate any text content")
         
     return text_content
-
 async def get_learning_path(paper_id: str) -> Dict[str, Any]:
     """
     Retrieve an existing learning path or generate a new one if it doesn't exist.

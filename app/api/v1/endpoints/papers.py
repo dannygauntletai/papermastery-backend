@@ -693,6 +693,28 @@ async def run_immediate_processing(file_content: bytes, paper_id: UUID, source_u
                 })
                 
                 logger.info(f"Successfully generated and updated summaries for paper {paper_id}")
+                
+                # Generate learning path immediately after summarization is complete
+                try:
+                    from app.services.learning_service import generate_learning_path
+                    
+                    # Generate the learning path
+                    learning_path = await generate_learning_path(str(paper_id))
+                    
+                    logger.info(f"Successfully generated learning path with {len(learning_path.items)} items for paper {paper_id}")
+                    
+                    # Update the paper with learning path status
+                    await update_paper(paper_id, {
+                        "tags": {
+                            "status": "processing", 
+                            "processing_stage": "learning_path_generated",
+                            "has_learning_materials": True,
+                            "learning_materials_count": len(learning_path.items)
+                        }
+                    })
+                except Exception as learning_path_error:
+                    logger.error(f"Error generating learning path for paper {paper_id}: {str(learning_path_error)}")
+                    # Continue with further processing even if learning path generation fails
         except Exception as summary_error:
             logger.error(f"Error generating summaries for paper {paper_id}: {str(summary_error)}")
             # Continue with further processing even if summarization fails
