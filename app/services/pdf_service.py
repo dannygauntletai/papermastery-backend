@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import UUID
 from typing import Optional, Tuple, List, Dict, Any
 import re
+import tempfile
 
 from app.core.logger import get_logger
 from app.core.exceptions import PDFDownloadError, InvalidPDFUrlError
@@ -189,4 +190,43 @@ async def download_and_process_paper(source_url: str, paper_id: Optional[UUID] =
         
     except Exception as e:
         logger.error(f"Error processing PDF for source {source_url}: {str(e)}")
-        raise PDFDownloadError(f"Error processing PDF: {str(e)}") 
+        raise PDFDownloadError(f"Error processing PDF: {str(e)}")
+
+async def extract_text_from_pdf_bytes(file_content: bytes) -> str:
+    """
+    Extract text directly from PDF bytes without saving to disk first.
+    
+    Args:
+        file_content: The binary content of the PDF file
+        
+    Returns:
+        The extracted text from the PDF
+        
+    Raises:
+        PDFDownloadError: If there's an error extracting text from the PDF bytes
+    """
+    try:
+        logger.info("Extracting text from PDF bytes")
+        
+        # Create a temporary file to store the PDF content
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+            temp_file.write(file_content)
+            temp_path = temp_file.name
+        
+        # Extract text from the temporary file
+        text = await extract_text_from_pdf(temp_path)
+        
+        # Clean text
+        text = await clean_pdf_text(text)
+        
+        # Additional sanitization to ensure database compatibility
+        # Remove any remaining problematic characters
+        text = re.sub(r'[^\x20-\x7E\n\r\t]', '', text)
+        
+        logger.info("Successfully extracted and sanitized text from PDF bytes")
+        
+        return text
+        
+    except Exception as e:
+        logger.error(f"Error extracting text from PDF bytes: {str(e)}")
+        raise PDFDownloadError(f"Error extracting text from PDF bytes: {str(e)}") 

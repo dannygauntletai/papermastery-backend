@@ -725,3 +725,326 @@ async def mock_generate_summary_json(
         "intermediate": f"This is a mock intermediate summary that provides more details about: {abstract[:150]}...",
         "advanced": f"This is a mock advanced summary with technical depth covering: {abstract[:200]}..."
     } 
+
+async def mock_generate_learning_content_json(prompt: str, max_tokens: int = 2500, temperature: float = 0.3) -> Dict[str, Any]:
+    """
+    Mock function for generating learning content in JSON format.
+    
+    Args:
+        prompt: The prompt to generate content from
+        max_tokens: Maximum number of tokens to generate
+        temperature: Temperature for generation
+        
+    Returns:
+        Dictionary containing the generated content
+    """
+    logger.info(f"Mock generating learning content JSON with prompt: {prompt[:100]}...")
+    
+    # Return a mock response
+    return {
+        "title": "Mock Learning Content",
+        "sections": [
+            {
+                "title": "Introduction",
+                "content": "This is a mock introduction to the topic."
+            },
+            {
+                "title": "Key Concepts",
+                "content": "These are mock key concepts related to the topic."
+            },
+            {
+                "title": "Examples",
+                "content": "These are mock examples illustrating the concepts."
+            }
+        ]
+    }
+
+async def generate_structured_extraction(
+    text: str,
+    extraction_prompt: str,
+    max_tokens: int = 1000,
+    temperature: float = 0.2
+) -> Dict[str, Any]:
+    """
+    Extract structured data from text using LLM.
+    
+    Args:
+        text: The text to extract data from
+        extraction_prompt: The prompt explaining what to extract and how to format it
+        max_tokens: Maximum number of tokens to generate
+        temperature: Temperature for generation (lower for more deterministic extraction)
+        
+    Returns:
+        Dictionary containing the extracted structured data
+        
+    Raises:
+        LLMServiceError: If there's an error with the LLM service
+    """
+    try:
+        logger.info(f"Extracting structured data from text of length {len(text)}")
+        
+        # Combine the extraction prompt with the text
+        full_prompt = f"{extraction_prompt}\n\n{text}"
+        
+        # Use OpenAI if available
+        if openai_client:
+            try:
+                response = await openai_client.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant that extracts structured data from text."},
+                        {"role": "user", "content": full_prompt}
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=temperature
+                )
+                
+                # Extract the JSON from the response
+                result_text = response.choices[0].message.content
+                
+                # Try to parse the JSON
+                try:
+                    # Extract JSON if it's wrapped in markdown code blocks
+                    if "```json" in result_text:
+                        json_text = result_text.split("```json")[1].split("```")[0].strip()
+                    elif "```" in result_text:
+                        json_text = result_text.split("```")[1].split("```")[0].strip()
+                    else:
+                        json_text = result_text
+                        
+                    result_json = json.loads(json_text)
+                    return result_json
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to parse JSON from LLM response: {result_text}")
+                    # Try to extract JSON using regex as a fallback
+                    json_pattern = r'\{.*\}'
+                    match = re.search(json_pattern, result_text, re.DOTALL)
+                    if match:
+                        try:
+                            result_json = json.loads(match.group(0))
+                            return result_json
+                        except json.JSONDecodeError:
+                            pass
+                    
+                    # If all parsing attempts fail, return a basic structure
+                    return {
+                        "title": "Parsing Error",
+                        "authors": [],
+                        "abstract": None,
+                        "publication_date": None
+                    }
+                
+            except Exception as e:
+                logger.error(f"Error with OpenAI extraction: {str(e)}")
+                raise LLMServiceError(f"OpenAI extraction error: {str(e)}")
+                
+        # Use Gemini if OpenAI is not available
+        elif gemini_api_key:
+            try:
+                model = genai.GenerativeModel(GEMINI_MODEL)
+                response = model.generate_content(full_prompt)
+                
+                # Extract the text from the response
+                result_text = response.text
+                
+                # Try to parse the JSON
+                try:
+                    # Extract JSON if it's wrapped in markdown code blocks
+                    if "```json" in result_text:
+                        json_text = result_text.split("```json")[1].split("```")[0].strip()
+                    elif "```" in result_text:
+                        json_text = result_text.split("```")[1].split("```")[0].strip()
+                    else:
+                        json_text = result_text
+                        
+                    result_json = json.loads(json_text)
+                    return result_json
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to parse JSON from LLM response: {result_text}")
+                    # Try to extract JSON using regex as a fallback
+                    json_pattern = r'\{.*\}'
+                    match = re.search(json_pattern, result_text, re.DOTALL)
+                    if match:
+                        try:
+                            result_json = json.loads(match.group(0))
+                            return result_json
+                        except json.JSONDecodeError:
+                            pass
+                    
+                    # If all parsing attempts fail, return a basic structure
+                    return {
+                        "title": "Parsing Error",
+                        "authors": [],
+                        "abstract": None,
+                        "publication_date": None
+                    }
+                
+            except Exception as e:
+                logger.error(f"Error with Gemini extraction: {str(e)}")
+                raise LLMServiceError(f"Gemini extraction error: {str(e)}")
+        
+        # If no LLM service is available, use mock data
+            logger.warning("No LLM service available, using mock extraction")
+            return {
+                "title": "Mock Paper Title",
+                "authors": [{"name": "Mock Author", "affiliations": ["Mock University"]}],
+                "abstract": "This is a mock abstract for testing purposes.",
+                "publication_date": "2023-01-01"
+            }
+            
+    except Exception as e:
+        logger.error(f"Error in generate_structured_extraction: {str(e)}")
+        # Return a basic structure in case of error
+        return {
+            "title": "Extraction Error",
+            "authors": [],
+            "abstract": None,
+            "publication_date": None
+        } 
+    
+
+
+
+async def generate_learning_content_json_with_pdf(
+    prompt: str,
+    pdf_path: str,
+    max_tokens: int = 2500,
+    temperature: float = 0.3
+) -> Dict[str, Any]:
+    """
+    Generate a JSON response containing structured learning content using a Large Language Model with PDF input.
+    
+    Args:
+        prompt: The prompt to generate learning content in JSON format
+        pdf_path: Path to the PDF file
+        max_tokens: Maximum tokens to generate
+        temperature: Controls randomness (0.0-1.0)
+        
+    Returns:
+        Dictionary containing:
+        - methodology: Object with title and content
+        - results: Object with title and content
+        - key_concepts: Array of 3 objects with key_concept and explainer
+        
+    Raises:
+        LLMServiceError: If an error occurs while generating or parsing the JSON
+    """
+    try:
+        logger.info("Generating structured learning content with PDF in JSON format")
+        
+        # Check if PDF file exists
+        pdf_file = Path(pdf_path)
+        if not pdf_file.exists():
+            raise LLMServiceError(f"PDF file not found: {pdf_path}")
+        
+        # Use Gemini if available, otherwise fall back to OpenAI
+        if gemini_api_key:
+            # Call the Gemini API with the PDF
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            
+            # Read the PDF file
+            with open(pdf_path, "rb") as f:
+                pdf_content = f.read()
+            
+            # Use the file content directly in the generate_content call
+            response = await asyncio.to_thread(
+                model.generate_content,
+                [
+                    prompt,
+                    {"mime_type": "application/pdf", "data": pdf_content}
+                ],
+                generation_config={
+                    "max_output_tokens": max_tokens,
+                    "temperature": temperature,
+                }
+            )
+            
+            # Extract the response text
+            response_text = response.text
+        elif openai_api_key and openai_client:
+            # Fall back to OpenAI if Gemini is not available
+            # Note: OpenAI doesn't support direct PDF input, so we'll need to extract text first
+            logger.warning("Gemini API key not available, falling back to OpenAI (note: PDF content may be limited)")
+            
+            # Extract text from PDF
+            from app.services.pdf_service import extract_text_from_pdf
+            pdf_text = await extract_text_from_pdf(pdf_path)
+            
+            # Truncate if too long for OpenAI
+            if len(pdf_text) > 10000:
+                pdf_text = pdf_text[:10000] + "... [truncated]"
+            
+            # Create a modified prompt that includes the PDF text
+            modified_prompt = f"{prompt}\n\nPDF Content:\n{pdf_text}"
+            
+            # Call the OpenAI API
+            response = await openai_client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[{"role": "user", "content": modified_prompt}],
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            
+            # Extract the response text
+            response_text = response.choices[0].message.content
+        else:
+            raise LLMServiceError("Neither Gemini nor OpenAI API key is available")
+        
+        # Extract JSON from the response
+        # First, try to parse the entire response as JSON
+        try:
+            result = json.loads(response_text)
+            logger.info("Successfully parsed JSON response")
+        except json.JSONDecodeError:
+            # If that fails, try to extract JSON from markdown code blocks
+            logger.warning("Failed to parse entire response as JSON, trying to extract JSON from code blocks")
+            json_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', response_text)
+            
+            if json_match:
+                try:
+                    result = json.loads(json_match.group(1))
+                    logger.info("Successfully extracted and parsed JSON from code block")
+                except json.JSONDecodeError:
+                    raise LLMServiceError("Failed to parse extracted JSON from code block")
+            else:
+                # Last resort: try to find anything that looks like a JSON object
+                logger.warning("No code blocks found, trying to extract JSON object directly")
+                json_match = re.search(r'{[\s\S]*?}', response_text)
+                
+                if json_match:
+                    try:
+                        result = json.loads(json_match.group(0))
+                        logger.info("Successfully extracted and parsed JSON object")
+                    except json.JSONDecodeError:
+                        raise LLMServiceError("Failed to parse extracted JSON object")
+                else:
+                    raise LLMServiceError("No JSON found in the response")
+        
+        # Validate that the required keys are present
+        required_keys = ["methodology", "results", "key_concepts"]
+        missing_keys = [key for key in required_keys if key not in result]
+        
+        if missing_keys:
+            logger.error(f"Missing required keys in JSON response: {missing_keys}")
+            raise LLMServiceError(f"Missing required keys in JSON response: {missing_keys}")
+        
+        # Validate structure of the response
+        if not isinstance(result["methodology"], dict) or "title" not in result["methodology"] or "content" not in result["methodology"]:
+            raise LLMServiceError("Invalid structure for methodology in JSON response")
+            
+        if not isinstance(result["results"], dict) or "title" not in result["results"] or "content" not in result["results"]:
+            raise LLMServiceError("Invalid structure for results in JSON response")
+            
+        if not isinstance(result["key_concepts"], list) or len(result["key_concepts"]) != 3:
+            raise LLMServiceError("key_concepts must be an array of exactly 3 items")
+            
+        for concept in result["key_concepts"]:
+            if not isinstance(concept, dict) or "key_concept" not in concept or "explainer" not in concept:
+                raise LLMServiceError("Each key_concept item must have key_concept and explainer fields")
+        
+        logger.info("Successfully generated and parsed structured learning content from PDF in JSON format")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error generating learning content JSON with PDF: {str(e)}")
+        raise LLMServiceError(f"Error generating learning content JSON with PDF: {str(e)}") 

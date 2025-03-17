@@ -120,6 +120,10 @@ class PaperResponse(Paper):
     """Model for paper response in API."""
     pass
 
+class PaperSubmitResponse(BaseModel):
+    """Model for paper submission response with only UUID."""
+    id: str
+
 # Flashcard and Quiz models
 class CardItem(BaseModel):
     """Model for flashcard item."""
@@ -136,7 +140,9 @@ class QuestionItem(BaseModel):
 # API models for learning materials
 class LearningItemType(str, Enum):
     """Enum for learning item types."""
-    TEXT = "text"
+    CONCEPTS = "concepts"
+    METHODOLOGY = "methodology"
+    RESULTS = "results"
     VIDEO = "video"
     FLASHCARD = "flashcard"
     QUIZ = "quiz"
@@ -367,12 +373,9 @@ class AnswerResult(BaseModel):
 
 class UserProgressRecord(BaseModel):
     """API model for user progress records."""
-    id: str
     user_id: str
     item_id: str
-    status: str
-    time_spent_seconds: int
-    timestamp: str
+    completed: bool
 
 # Chat models
 class ChatRequest(BaseModel):

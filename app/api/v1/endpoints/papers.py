@@ -4,14 +4,16 @@ from uuid import UUID
 import uuid
 import json
 import hashlib
+from datetime import datetime
 
-from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary, SourceType
+from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary, SourceType, PaperSubmitResponse
 from app.core.logger import get_logger
 from app.services.paper_service import (
     fetch_arxiv_metadata,
-    get_related_papers
+    get_related_papers,
+    extract_metadata_from_text
 )
-from app.services.pdf_service import download_and_process_paper, download_pdf, read_pdf_file_to_bytes
+from app.services.pdf_service import download_and_process_paper, download_pdf, read_pdf_file_to_bytes, extract_text_from_pdf_bytes
 from app.services.url_service import detect_url_type, fetch_metadata_from_url
 from app.utils.url_utils import extract_paper_id_from_url
 from app.database.supabase_client import (
@@ -38,7 +40,7 @@ router = APIRouter(
 )
 
 
-@router.post("/submit", response_model=PaperResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post("/submit", response_model=PaperSubmitResponse, status_code=status.HTTP_202_ACCEPTED)
 async def submit_paper(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -62,7 +64,7 @@ async def submit_paper(
         user_id: The ID of the authenticated user
         
     Returns:
-        The paper data with processing status
+        The paper ID as a UUID
     """
     logger.info(f"Received paper submission from user {user_id}")
     
@@ -224,39 +226,25 @@ async def submit_paper(
             # If the conversation creation fails, log the error but continue
             logger.warning(f"Could not create conversation for existing paper: {str(e)}")
         
-        return existing_paper
+        return {"id": existing_paper["id"]}
     
-    # Fetch paper metadata based on source type
-    try:
-        # For arXiv papers, use the original URL for metadata extraction
-        metadata_url = original_url if source_type == SourceType.ARXIV and 'original_url' in locals() else source_url
-        metadata_source_type = SourceType.ARXIV if source_type == SourceType.ARXIV and 'original_url' in locals() else source_type
-        
-        paper_metadata = await fetch_metadata_from_url(metadata_url, metadata_source_type)
-    except Exception as e:
-        logger.error(f"Error fetching metadata for URL {source_url}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error fetching paper metadata: {str(e)}"
-        )
-    
-    # Create initial paper entry in database
+    # Create initial paper entry in database with minimal information
     paper_data = {
-        "title": paper_metadata.title,
-        "authors": [{"name": author.name, "affiliations": author.affiliations} for author in paper_metadata.authors],
-        "abstract": '',  # Set abstract to None initially, will be extracted during processing
-        "publication_date": paper_metadata.publication_date.isoformat(),
+        "title": "Processing...",
+        "authors": [],
+        "abstract": None,
+        "publication_date": datetime.now().isoformat(),
         "summaries": None,
         "embedding_id": None,
         "related_papers": None,
         "source_type": source_type,
-        "source_url": source_url,  # Always use the Supabase storage URL for storage
-        "tags": {"status": "pending"}  # Use tags field to track status instead of processing_status
+        "source_url": source_url,
+        "tags": {"status": "processing", "processing_stage": "submitted"}
     }
     
     # Add arXiv ID if available
-    if hasattr(paper_metadata, 'arxiv_id') and paper_metadata.arxiv_id:
-        paper_data["arxiv_id"] = paper_metadata.arxiv_id
+    if arxiv_id:
+        paper_data["arxiv_id"] = arxiv_id
     
     new_paper = await insert_paper(paper_data)
     
@@ -276,16 +264,27 @@ async def submit_paper(
         logger.error(f"Error creating conversation for paper {new_paper['id']}: {str(e)}")
         # Continue even if conversation creation fails
     
-    # Process paper in background
-    background_tasks.add_task(
-        process_paper_in_background,
-        source_url=source_url,
-        source_type=source_type,
-        paper_id=UUID(new_paper["id"])
-    )
+    # Start immediate processing based on submission type
+    if file:
+        # For file uploads, use the file content directly
+        background_tasks.add_task(
+            run_immediate_processing,
+            file_content=file_content,
+            paper_id=UUID(new_paper["id"]),
+            source_url=source_url,
+            source_type=source_type
+        )
+    else:
+        # For URL submissions, download and process
+        background_tasks.add_task(
+            download_and_run_immediate_processing,
+            source_url=source_url,
+            source_type=source_type,
+            paper_id=UUID(new_paper["id"])
+        )
     
     logger.info(f"Paper submission accepted, processing in background: {source_url}")
-    return new_paper
+    return {"id": new_paper["id"]}
 
 
 @router.get("/{paper_id}", response_model=PaperResponse)
@@ -611,4 +610,242 @@ async def process_paper_in_background(source_url: str, source_type: str, paper_i
     except Exception as e:
         logger.error(f"Error processing paper {paper_id} in background: {str(e)}")
         # Update status to error
-        await update_paper(paper_id, {"tags": {"status": "error", "error_message": str(e)}}) 
+        await update_paper(paper_id, {"tags": {"status": "error", "error_message": str(e)}})
+
+async def run_immediate_processing(file_content: bytes, paper_id: UUID, source_url: str, source_type: str) -> None:
+    """
+    Run metadata extraction and summarization immediately after upload.
+    
+    Args:
+        file_content: The binary content of the uploaded PDF file
+        paper_id: The UUID of the paper
+        source_url: The URL to the paper in storage
+        source_type: The type of source ("arxiv", "pdf", "file")
+    """
+    try:
+        logger.info(f"Starting immediate processing for paper {paper_id}")
+        
+        # Update status to processing
+        await update_paper(paper_id, {"tags": {"status": "processing", "processing_stage": "extracting_text"}})
+        
+        # Extract text from PDF bytes
+        full_text = await extract_text_from_pdf_bytes(file_content)
+        
+        if not full_text:
+            logger.error(f"Failed to extract text from PDF for paper {paper_id}")
+            await update_paper(paper_id, {"tags": {"status": "error", "error_message": "Failed to extract text from PDF"}})
+            return
+        
+        # Extract metadata from text first
+        await update_paper(paper_id, {"tags": {"status": "processing", "processing_stage": "extracting_metadata"}})
+        try:
+            metadata = await extract_metadata_from_text(full_text)
+            
+            # Update the source_url in the metadata
+            metadata.source_url = source_url
+            metadata.source_type = SourceType(source_type)
+            
+            # Update paper with metadata immediately
+            await update_paper(paper_id, {
+                "title": metadata.title,
+                "authors": [{"name": author.name, "affiliations": author.affiliations} for author in metadata.authors],
+                "abstract": metadata.abstract,
+                "publication_date": metadata.publication_date.isoformat(),
+                "source_url": source_url,
+                "source_type": source_type,
+                "tags": {"status": "processing", "processing_stage": "metadata_extracted"}
+            })
+            
+            logger.info(f"Successfully extracted and updated metadata for paper {paper_id}")
+        except Exception as metadata_error:
+            logger.error(f"Error extracting metadata for paper {paper_id}: {str(metadata_error)}")
+            # Continue with summarization even if metadata extraction fails
+        
+        # Generate summaries next
+        await update_paper(paper_id, {"tags": {"status": "processing", "processing_stage": "summarizing"}})
+        try:
+            from app.services.summarization_service import generate_summaries
+            
+            # Get the updated paper to use its metadata for summarization
+            paper = await get_paper_by_id(paper_id)
+            
+            if not paper:
+                logger.error(f"Paper {paper_id} not found when trying to generate summaries")
+                return
+                
+            summaries, _ = await generate_summaries(
+                paper_id=paper_id,
+                title=paper.get("title", "Processing..."),
+                abstract=paper.get("abstract"),
+                full_text=full_text,
+                extract_abstract=False  # We'll extract abstract in a later step if needed
+            )
+            
+            # Update the paper with summaries
+            if summaries:
+                await update_paper(paper_id, {
+                    "summaries": {
+                        "beginner": summaries.beginner,
+                        "intermediate": summaries.intermediate,
+                        "advanced": summaries.advanced
+                    },
+                    "tags": {"status": "processing", "processing_stage": "summarized"}
+                })
+                
+                logger.info(f"Successfully generated and updated summaries for paper {paper_id}")
+                
+                # Generate learning path immediately after summarization is complete
+                try:
+                    from app.services.learning_service import generate_learning_path
+                    
+                    # Generate the learning path
+                    learning_path = await generate_learning_path(str(paper_id))
+                    
+                    logger.info(f"Successfully generated learning path with {len(learning_path.items)} items for paper {paper_id}")
+                    
+                    # Update the paper with learning path status
+                    await update_paper(paper_id, {
+                        "tags": {
+                            "status": "processing", 
+                            "processing_stage": "learning_path_generated",
+                            "has_learning_materials": True,
+                            "learning_materials_count": len(learning_path.items)
+                        }
+                    })
+                except Exception as learning_path_error:
+                    logger.error(f"Error generating learning path for paper {paper_id}: {str(learning_path_error)}")
+                    # Continue with further processing even if learning path generation fails
+        except Exception as summary_error:
+            logger.error(f"Error generating summaries for paper {paper_id}: {str(summary_error)}")
+            # Continue with further processing even if summarization fails
+        
+        # Start additional processing in background (abstract extraction, related papers, etc.)
+        background_tasks = BackgroundTasks()
+        background_tasks.add_task(
+            process_additional_paper_data,
+            file_content=file_content,
+            paper_id=paper_id,
+            full_text=full_text
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in immediate processing for paper {paper_id}: {str(e)}")
+        await update_paper(paper_id, {"tags": {"status": "error", "error_message": f"Processing error: {str(e)}"}})
+
+async def download_and_run_immediate_processing(source_url: str, source_type: str, paper_id: UUID) -> None:
+    """
+    Download a PDF from a URL and run immediate processing.
+    
+    Args:
+        source_url: The URL to download the PDF from
+        source_type: The type of source ("arxiv" or "pdf")
+        paper_id: The UUID of the paper
+    """
+    try:
+        logger.info(f"Downloading PDF for immediate processing for paper {paper_id} from {source_url}")
+        
+        # Update status to downloading
+        await update_paper(paper_id, {"tags": {"status": "processing", "processing_stage": "downloading"}})
+        
+        # Download the PDF based on source type
+        pdf_path, is_new = await download_pdf(source_url)
+        
+        if not pdf_path:
+            logger.error(f"Failed to download PDF from {source_url} for paper {paper_id}")
+            await update_paper(paper_id, {"tags": {"status": "error", "error_message": "Failed to download PDF"}})
+            return
+        
+        # Read the PDF file into bytes
+        pdf_content = await read_pdf_file_to_bytes(pdf_path)
+        
+        # Run immediate processing with the downloaded content
+        await run_immediate_processing(
+            file_content=pdf_content, 
+            paper_id=paper_id,
+            source_url=source_url,
+            source_type=source_type
+        )
+        
+    except Exception as e:
+        logger.error(f"Error downloading PDF for immediate processing for paper {paper_id}: {str(e)}")
+        await update_paper(paper_id, {"tags": {"status": "error", "error_message": f"PDF download error: {str(e)}"}})
+
+async def process_additional_paper_data(file_content: bytes, paper_id: UUID, full_text: str) -> None:
+    """
+    Process additional paper data after immediate processing is complete.
+    
+    Args:
+        file_content: The binary content of the PDF file
+        paper_id: The UUID of the paper
+        full_text: The already extracted text from the PDF
+    """
+    try:
+        logger.info(f"Starting additional processing for paper {paper_id}")
+        
+        # Get the current paper data
+        paper = await get_paper_by_id(paper_id)
+        if not paper:
+            logger.error(f"Paper with ID {paper_id} not found in database")
+            return
+        
+        # Extract abstract if needed
+        if not paper.get("abstract"):
+            await update_paper(paper_id, {"tags": {"status": "processing", "processing_stage": "extracting_abstract"}})
+            try:
+                from app.services.summarization_service import generate_summaries
+                _, extracted_abstract = await generate_summaries(
+                    paper_id=paper_id,
+                    title=paper.get("title", ""),
+                    abstract=paper.get("abstract"),
+                    full_text=full_text,
+                    extract_abstract=True
+                )
+                
+                if extracted_abstract:
+                    await update_paper(paper_id, {
+                        "abstract": extracted_abstract,
+                        "tags": {"status": "processing", "processing_stage": "abstract_extracted"}
+                    })
+                    paper["abstract"] = extracted_abstract  # Update local copy for next steps
+            except Exception as abstract_error:
+                logger.error(f"Error extracting abstract for paper {paper_id}: {str(abstract_error)}")
+                # Continue processing even if abstract extraction fails
+        
+        # Find related papers
+        await update_paper(paper_id, {"tags": {"status": "processing", "processing_stage": "finding_related_papers"}})
+        try:
+            related_papers = await get_related_papers(
+                paper_id=paper_id,
+                title=paper.get("title"),
+                abstract=paper.get("abstract")
+            )
+            
+            if related_papers:
+                await update_paper(paper_id, {
+                    "related_papers": related_papers,
+                    "tags": {"status": "processing", "processing_stage": "related_papers_found"}
+                })
+        except Exception as related_error:
+            logger.error(f"Error finding related papers for paper {paper_id}: {str(related_error)}")
+            # Continue processing even if related papers fails
+            
+        # Mark paper processing as complete
+        await update_paper(paper_id, {
+            "full_text": full_text,
+            "tags": {"status": "completed", "processing_stage": "paper_complete"}
+        })
+        
+        # Start learning items processing
+        from app.api.v1.endpoints.learning import process_learning_items
+        background_tasks = BackgroundTasks()
+        background_tasks.add_task(
+            process_learning_items,
+            paper_id=paper_id,
+            full_text=full_text,
+            title=paper.get("title"),
+            abstract=paper.get("abstract")
+        )
+        
+    except Exception as e:
+        logger.error(f"Error processing additional data for paper {paper_id}: {str(e)}")
+        await update_paper(paper_id, {"tags": {"status": "error", "error_message": f"Additional processing error: {str(e)}"}}) 

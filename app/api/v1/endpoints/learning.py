@@ -25,7 +25,8 @@ from app.services.learning_service import (
     get_user_progress,
     submit_answer,
     generate_flashcards,
-    generate_quiz_questions
+    generate_quiz_questions,
+    record_paper_progress
 )
 from app.api.dependencies import get_current_user
 
@@ -39,14 +40,15 @@ logger = logging.getLogger(__name__)
 
 class ProgressUpdate(BaseModel):
     """Model for updating user progress on an item."""
-    status: str
-    time_spent_seconds: int
-    sprt_log_likelihood_ratio: Optional[float] = 0.0
-    decision: Optional[str] = "in_progress"
+    completed: bool
 
 class AnswerSubmission(BaseModel):
     """Model for submitting an answer to a question."""
     answer: str
+
+class PaperProgressUpdate(BaseModel):
+    """Model for updating paper progress."""
+    progress_type: str  # 'summary' or 'related_papers'
 
 @router.get("/papers/{paper_id}/learning-path", response_model=LearningPath)
 async def get_paper_learning_path(
@@ -197,12 +199,10 @@ async def record_item_progress(
     Record a user's progress on a learning item.
     """
     try:
-        # No need to check user_id and item_id match since we're using ProgressUpdate
         await record_progress(
             item_id=item_id,
             user_id=user_id,
-            status=progress.status,
-            time_spent_seconds=progress.time_spent_seconds
+            completed=progress.completed
         )
         
         return None
@@ -289,4 +289,30 @@ async def get_quiz_questions(
         return await generate_quiz_questions(paper_id)
     except Exception as e:
         logger.error(f"Error getting quiz questions: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error getting quiz questions: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Error getting quiz questions: {str(e)}")
+
+@router.post("/papers/{paper_id}/progress", status_code=204)
+async def update_paper_progress(
+    progress: PaperProgressUpdate,
+    paper_id: str = Path(..., description="The ID of the paper"),
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Record a user's progress on a paper's summary or related papers.
+    
+    Args:
+        progress: The progress update containing the progress type
+        paper_id: The ID of the paper
+        user_id: The ID of the user
+    """
+    try:
+        await record_paper_progress(
+            paper_id,
+            user_id,
+            progress.progress_type
+        )
+        
+        return None
+    except Exception as e:
+        logger.error(f"Error recording paper progress: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error recording paper progress: {str(e)}") 

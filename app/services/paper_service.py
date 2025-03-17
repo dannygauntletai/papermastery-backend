@@ -15,6 +15,7 @@ from app.core.config import ARXIV_API_BASE_URL, OPENALEX_API_BASE_URL
 from app.core.exceptions import ArXivAPIError, InvalidArXivLinkError, PDFDownloadError
 from app.utils.pdf_utils import download_pdf, extract_text_from_pdf, clean_pdf_text
 from app.utils.url_utils import extract_paper_id_from_url
+from app.services.llm_service import generate_structured_extraction
 
 logger = get_logger(__name__)
 
@@ -323,3 +324,112 @@ async def get_related_papers(paper_id: UUID, title: Optional[str] = None, abstra
         # Return empty list instead of raising an exception
         # since related papers are not critical
         return [] 
+
+
+async def extract_metadata_from_text(text: str) -> PaperMetadata:
+    """
+    Extract metadata from PDF text.
+    
+    Args:
+        text: The text extracted from the PDF
+        
+    Returns:
+        PaperMetadata object containing extracted metadata (title, authors, abstract, publication_date)
+        
+    Raises:
+        Exception: If there's an error extracting metadata
+    """
+    try:
+        logger.info("Extracting metadata from text")
+        
+        # Use LLM to extract metadata
+        # First, use only the first 10000 characters to avoid token limits
+        # This should be enough to capture the title, authors, and abstract
+        text_sample = text[:10000]
+        
+        # Define the extraction prompt
+        extraction_prompt = """
+        Extract the following metadata from this academic paper text:
+        1. Title
+        2. Authors (with affiliations if available)
+        3. Abstract
+        4. Publication date (if available)
+        
+        Format the response as a JSON object with these fields:
+        {
+            "title": "Paper Title",
+            "authors": [
+                {"name": "Author Name", "affiliations": ["Affiliation 1", "Affiliation 2"]}
+            ],
+            "abstract": "Paper abstract...",
+            "publication_date": "YYYY-MM-DD"
+        }
+        
+        If any field is not found, set it to null.
+        
+        Here is the paper text:
+        """
+        
+        # Use LLM service to extract structured metadata
+        metadata_json = await generate_structured_extraction(
+            text_sample, 
+            extraction_prompt,
+            max_tokens=1000
+        )
+        
+        # Convert the JSON to a PaperMetadata object
+        authors = []
+        for author_data in metadata_json.get("authors", []):
+            authors.append(Author(
+                name=author_data.get("name", "Unknown Author"),
+                affiliations=author_data.get("affiliations", [])
+            ))
+        
+        # Parse the publication date
+        pub_date = metadata_json.get("publication_date")
+        if pub_date:
+            try:
+                publication_date = datetime.fromisoformat(pub_date)
+            except ValueError:
+                # Try to parse with different formats
+                try:
+                    # Try MM/DD/YYYY format
+                    if "/" in pub_date:
+                        parts = pub_date.split("/")
+                        if len(parts) == 3:
+                            month, day, year = parts
+                            publication_date = datetime(int(year), int(month), int(day))
+                    # Try Month Year format (e.g., "January 2023")
+                    else:
+                        # This is a simplification - would need more robust parsing
+                        publication_date = datetime.now()
+                except:
+                    publication_date = datetime.now()
+        else:
+            publication_date = datetime.now()
+        
+        # Get abstract or provide a default
+        abstract = metadata_json.get("abstract")
+        if abstract is None:
+            abstract = "Abstract not available"
+        
+        return PaperMetadata(
+            title=metadata_json.get("title", "Untitled Paper"),
+            authors=authors,
+            abstract=abstract,
+            publication_date=publication_date,
+            source_url="placeholder_url",  # Add a placeholder URL that will be replaced later
+            source_type=SourceType.PDF
+        )
+        
+    except Exception as e:
+        logger.error(f"Error extracting metadata from text: {str(e)}")
+        # Return fallback metadata
+        return PaperMetadata(
+            title="Error Extracting Title",
+            authors=[Author(name="Unknown Author", affiliations=[])],
+            abstract="Abstract not available",
+            publication_date=datetime.now(),
+            source_url="placeholder_url",  # Add a placeholder URL that will be replaced later
+            source_type=SourceType.PDF
+        ) 
