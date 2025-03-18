@@ -213,19 +213,29 @@ async def record_item_progress(
 @router.post("/questions/{question_id}/answer", response_model=AnswerResult)
 async def submit_question_answer(
     question_id: str = Path(..., description="The ID of the quiz question"),
-    answer: QuizAnswer = None,
+    answer: dict = Body(...),  # Keep the fix of using dict to capture raw payload
     user_id: str = Depends(get_current_user)
 ):
     """
     Submit an answer to a quiz question and get feedback.
     """
     try:
+        # Extract the selected answer index
+        selected_answer = answer.get("selected_answer")
+        
+        if selected_answer is None:
+            raise HTTPException(status_code=400, detail="Missing required field: selected_answer")
+        
+        # Call the service with the extracted answer
         result = await submit_answer(
             question_id=question_id,
             user_id=user_id,
-            answer_index=answer.selected_answer
+            answer_index=selected_answer
         )
+        
         return result
+    except HTTPException as he:
+        raise
     except Exception as e:
         logger.error(f"Error submitting answer: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error submitting answer: {str(e)}")
@@ -315,4 +325,107 @@ async def update_paper_progress(
         return None
     except Exception as e:
         logger.error(f"Error recording paper progress: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error recording paper progress: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Error recording paper progress: {str(e)}")
+
+@router.get("/user/answers", response_model=List[Dict[str, Any]])
+async def get_user_answers(
+    user_id: str = Depends(get_current_user),
+    paper_id: Optional[str] = Query(None, description="Filter by paper ID")
+):
+    """
+    Get a user's answers to quiz questions.
+    
+    Returns:
+        List of answers with question details
+    """
+    try:
+        # Get question IDs for this paper if paper_id is provided
+        question_ids = []
+        if paper_id:
+            # Get learning items for this paper
+            items_query = (
+                supabase.table("items")
+                .select("id")
+                .eq("paper_id", paper_id)
+            )
+            
+            items_result = items_query.execute()
+            
+            if items_result.data:
+                item_ids = [item["id"] for item in items_result.data]
+                
+                # Get questions for these items
+                questions_query = (
+                    supabase.table("questions")
+                    .select("id")
+                    .in_("item_id", item_ids)
+                )
+                
+                questions_result = questions_query.execute()
+                
+                if questions_result.data:
+                    question_ids = [question["id"] for question in questions_result.data]
+        
+        # Query for user answers
+        answers_query = supabase.table("answers").select("*").eq("user_id", user_id)
+        
+        # Filter by question IDs if we have them
+        if question_ids and paper_id:
+            answers_query = answers_query.in_("question_id", question_ids)
+            
+        answers_result = answers_query.execute()
+        
+        if not answers_result.data:
+            return []
+            
+        # Get all question IDs from answers
+        answer_question_ids = [answer["question_id"] for answer in answers_result.data]
+        
+        # Fetch questions in a separate query
+        questions_query = (
+            supabase.table("questions")
+            .select("id, text, choices, correct_answer")
+            .in_("id", answer_question_ids)
+        )
+        
+        questions_result = questions_query.execute()
+        
+        # Create a map of question ID to question data
+        questions_map = {q["id"]: q for q in questions_result.data} if questions_result.data else {}
+        
+        # Format the response by combining answer and question data
+        formatted_answers = []
+        for answer_data in answers_result.data:
+            question_id = answer_data.get("question_id")
+            question = questions_map.get(question_id, {})
+            
+            # Format choices and answers as integers where possible
+            selected_answer = None
+            try:
+                selected_answer = int(answer_data.get("answer", "0"))
+            except ValueError:
+                selected_answer = 0
+                
+            correct_answer = None
+            try:
+                correct_answer = int(question.get("correct_answer", "0"))
+            except ValueError:
+                correct_answer = 0
+            
+            formatted_answer = {
+                "id": answer_data.get("id"),
+                "question_id": question_id,
+                "question_text": question.get("text", ""),
+                "choices": question.get("choices", []),
+                "selected_answer": selected_answer,
+                "correct_answer": correct_answer,
+                "is_correct": selected_answer == correct_answer,
+                "timestamp": answer_data.get("timestamp")
+            }
+            
+            formatted_answers.append(formatted_answer)
+        
+        return formatted_answers
+    except Exception as e:
+        logger.error(f"Error getting user answers: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error getting user answers: {str(e)}") 

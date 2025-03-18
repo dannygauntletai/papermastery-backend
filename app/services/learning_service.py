@@ -1387,6 +1387,7 @@ async def generate_text_content(paper_id: str) -> List[Dict[str, Any]]:
         raise ValueError("Failed to generate any text content")
         
     return text_content
+
 async def get_learning_path(paper_id: str) -> Dict[str, Any]:
     """
     Retrieve an existing learning path or generate a new one if it doesn't exist.
@@ -1673,49 +1674,80 @@ async def submit_answer(question_id: str, user_id: str, answer_index: int) -> An
     Returns:
         AnswerResult: The result of the answer submission
     """
-    # Find the learning item for this question
-    # In a real implementation, this would query the database
+    logger.info(f"Looking up question {question_id} in database")
     
-    # Mock implementation - look through all cached learning paths
-    correct_answer = None
-    explanation = None
-    
-    for learning_path in learning_path_cache.values():
-        for item in learning_path.items:
-            if item.id == question_id and item.type == LearningItemType.QUIZ:
-                correct_answer = item.metadata.get("correct_answer")
-                explanation = item.metadata.get("explanation")
-                break
-        if correct_answer is not None:
-            break
-    
-    # If we couldn't find the question, return a default response
-    if correct_answer is None:
-        return AnswerResult(
-            is_correct=False,
-            correct_answer=0,  # Default
-            explanation="Question not found",
+    try:
+        # Query the questions table for the question
+        question_query = supabase.table("questions").select("*").eq("id", question_id).execute()
+        
+        if not question_query.data:
+            logger.warning(f"Question {question_id} not found in database")
+            return AnswerResult(
+                is_correct=False,
+                correct_answer=0,  # Default
+                explanation="Question not found",
+                user_id=user_id,
+                question_id=question_id,
+                selected_answer=answer_index,
+                timestamp=datetime.now().isoformat()
+            )
+        
+        question_data = question_query.data[0]
+        logger.info(f"Found question in database: {question_data}")
+        
+        # Extract the correct answer
+        correct_answer = None
+        if 'correct_answer' in question_data:
+            try:
+                correct_answer = int(question_data['correct_answer'])
+                logger.info(f"Parsed correct_answer={correct_answer} (int)")
+            except (ValueError, TypeError):
+                logger.warning(f"Could not parse correct_answer as int: {question_data['correct_answer']}")
+                correct_answer = 0
+        
+        # Evaluate the answer
+        is_correct = answer_index == correct_answer
+        
+        # Record the answer in the database
+        try:
+            answer_data = {
+                "user_id": user_id,
+                "question_id": question_id,
+                "answer": str(answer_index),
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            logger.info(f"Recording answer in database: {answer_data}")
+            answer_result = supabase.table("answers").insert(answer_data).execute()
+            logger.info(f"Answer recorded: {answer_result.data if answer_result.data else 'No data returned'}")
+        except Exception as e:
+            logger.error(f"Failed to record answer in database: {e}")
+            # Continue since this is not critical
+        
+        # Create the result
+        result = AnswerResult(
+            is_correct=is_correct,
+            correct_answer=correct_answer if correct_answer is not None else 0,
+            explanation=question_data.get('explanation', "No explanation available"),
             user_id=user_id,
             question_id=question_id,
             selected_answer=answer_index,
             timestamp=datetime.now().isoformat()
         )
-    
-    # Evaluate the answer
-    is_correct = answer_index == correct_answer
-    
-    # Record the result
-    result = AnswerResult(
-        is_correct=is_correct,
-        correct_answer=correct_answer,
-        explanation=explanation or "No explanation available",
-        user_id=user_id,
-        question_id=question_id,
-        selected_answer=answer_index,
-        timestamp=datetime.now().isoformat()
-    )
-    
-    # In a real implementation, we would store this result in the database
-    logger.info(f"User {user_id} answered question {question_id}: {'Correct' if is_correct else 'Incorrect'}")
-    
-    return result 
+        
+        logger.info(f"User {user_id} answered question {question_id}: {'Correct' if is_correct else 'Incorrect'}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error processing answer submission: {str(e)}", exc_info=True)
+        # Fallback to the old behavior
+        return AnswerResult(
+            is_correct=False,
+            correct_answer=0,
+            explanation=f"Error processing answer: {str(e)}",
+            user_id=user_id,
+            question_id=question_id,
+            selected_answer=answer_index,
+            timestamp=datetime.now().isoformat()
+        ) 
