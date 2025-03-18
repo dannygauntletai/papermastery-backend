@@ -4,7 +4,7 @@ from uuid import UUID
 
 from app.api.v1.models import ChatRequest, ChatResponse, MessageResponse, MessageSource
 from app.core.logger import get_logger
-from app.database.supabase_client import get_paper_by_id, insert_message, get_conversation, create_conversation, get_conversation_messages, get_paper_full_text
+from app.database.supabase_client import get_paper_by_id, insert_message, get_conversation, create_conversation, get_conversation_messages
 from app.services.llm_service import generate_response, mock_generate_response
 from app.dependencies import validate_environment, rate_limit, get_current_user
 from app.core.config import APP_ENV
@@ -57,15 +57,6 @@ async def chat_with_paper(
             detail=f"Paper with ID {paper_id} not found"
         )
     
-    # Check if the paper has been processed (has full text)
-    full_text = await get_paper_full_text(paper_id)
-    if not full_text or len(full_text) < 100:  # Minimal text check
-        logger.error(f"Paper {paper_id} has not been fully processed")
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="This paper has not been fully processed yet. Please try again later."
-        )
-    
     # Ensure a conversation exists for this paper
     conversation_id = chat_request.conversation_id if chat_request.conversation_id else str(paper_id)
     conversation = await get_conversation(conversation_id)
@@ -97,22 +88,13 @@ async def chat_with_paper(
         logger.error(f"Error saving user message: {str(e)}")
         # Continue even if message saving fails
     
-    # Generate response based on full text
+    # Generate response using Gemini PDF processing
     try:
         response_func = mock_generate_response if APP_ENV == "testing" else generate_response
         
-        # Create a context chunk from the full text
-        context_chunks = [{
-            "text": full_text[:8000],  # Use first 8000 chars to avoid token limits
-            "metadata": {
-                "paper_id": str(paper_id),
-                "page_number": 1
-            }
-        }]
-        
         response_data = await response_func(
             query=chat_request.query,
-            context_chunks=context_chunks,
+            context_chunks=[],  # Empty context chunks since we're using PDF directly
             paper_title=paper.get("title", ""),
             paper_id=paper_id
         )
@@ -205,10 +187,10 @@ async def get_paper_messages(
                 user_id=message.get("user_id", user_id),  # Use the current user_id as fallback
                 paper_id=message.get("paper_id"),
                 conversation_id=message.get("conversation_id"),
-                query=message.get("text") if message.get("sender") == "user" else "",
-                response=message.get("text") if message.get("sender") == "bot" else "",
+                text=message.get("text", ""),
+                sender=message.get("sender", "user"),
                 sources=None,  # No sources available in the existing message format
-                timestamp=message.get("created_at")
+                created_at=message.get("created_at")
             )
             for message in messages
         ]

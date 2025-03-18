@@ -396,10 +396,10 @@ class MessageResponse(BaseModel):
     user_id: str
     paper_id: str
     conversation_id: str
-    query: str
-    response: str
+    text: str
+    sender: str  # "user" or "bot"
     sources: Optional[List[MessageSource]] = None
-    timestamp: datetime
+    created_at: datetime
     
     class Config:
         from_attributes = True
