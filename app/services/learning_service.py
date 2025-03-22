@@ -23,6 +23,8 @@ from app.api.v1.models import (
 from app.services.llm_service import generate_text, mock_generate_learning_content_json
 from app.services.pdf_service import get_paper_pdf
 from app.templates.prompts.learning_content import get_learning_content_prompt
+from uuid import UUID
+from app.utils.pdf_utils import extract_text_from_pdf
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -701,26 +703,26 @@ def _get_mock_quiz_questions() -> List[QuestionItem]:
             explanation="PCA is a widely used technique for dimensionality reduction that transforms high-dimensional data into a lower-dimensional space while preserving as much variance as possible."
         ),
         QuestionItem(
-            question="What does the term 'epoch' refer to in machine learning?",
+            question="What is the main challenge of the 'curse of dimensionality'?",
             options=[
-                "A hyperparameter that controls model complexity",
-                "The time it takes to train a model",
-                "A complete pass through the entire training dataset",
-                "The error rate of a model"
+                "Limited computational resources for high-dimensional data",
+                "Increased noise in high-dimensional data",
+                "The exponential increase in volume as dimensions increase",
+                "The difficulty in visualizing high-dimensional data"
             ],
             correct_answer=2,
-            explanation="An epoch in machine learning refers to one complete pass through the entire training dataset during the training process."
+            explanation="The curse of dimensionality refers to the exponential increase in volume as dimensions increase, making data increasingly sparse and distance metrics less meaningful."
         ),
         QuestionItem(
-            question="Which of the following is a common loss function for binary classification?",
+            question="Which of the following is a commonly used loss function for regression problems?",
             options=[
-                "Mean Squared Error",
-                "Binary Cross-Entropy",
-                "Hinge Loss",
-                "All of the above"
+                "Cross-entropy loss",
+                "Mean Squared Error (MSE)",
+                "Hinge loss",
+                "Triplet loss"
             ],
             correct_answer=1,
-            explanation="Binary Cross-Entropy (also called Log Loss) is commonly used for binary classification problems as it measures the performance of a model whose output is a probability value between 0 and 1."
+            explanation="Mean Squared Error (MSE) is commonly used for regression problems as it penalizes larger errors more heavily than smaller ones and has nice mathematical properties for optimization."
         )
     ]
 
@@ -1750,4 +1752,272 @@ async def submit_answer(question_id: str, user_id: str, answer_index: int) -> An
             question_id=question_id,
             selected_answer=answer_index,
             timestamp=datetime.now().isoformat()
-        ) 
+        )
+
+async def get_user_answers(user_id: str, paper_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Get a user's answers to quiz questions.
+    
+    Args:
+        user_id: The ID of the user
+        paper_id: Optional paper ID to filter answers by paper
+        
+    Returns:
+        List of answers with question details
+    """
+    try:
+        # Get question IDs for this paper if paper_id is provided
+        question_ids = []
+        if paper_id:
+            # Get learning items for this paper
+            items_query = (
+                supabase.table("items")
+                .select("id")
+                .eq("paper_id", paper_id)
+            )
+            
+            items_result = items_query.execute()
+            
+            if items_result.data:
+                item_ids = [item["id"] for item in items_result.data]
+                
+                # Get questions for these items
+                questions_query = (
+                    supabase.table("questions")
+                    .select("id")
+                    .in_("item_id", item_ids)
+                )
+                
+                questions_result = questions_query.execute()
+                
+                if questions_result.data:
+                    question_ids = [question["id"] for question in questions_result.data]
+        
+        # Query for user answers
+        answers_query = supabase.table("answers").select("*").eq("user_id", user_id)
+        
+        # Filter by question IDs if we have them
+        if question_ids and paper_id:
+            answers_query = answers_query.in_("question_id", question_ids)
+            
+        answers_result = answers_query.execute()
+        
+        if not answers_result.data:
+            return []
+            
+        # Get all question IDs from answers
+        answer_question_ids = [answer["question_id"] for answer in answers_result.data]
+        
+        # Fetch questions in a separate query
+        questions_query = (
+            supabase.table("questions")
+            .select("id, text, choices, correct_answer")
+            .in_("id", answer_question_ids)
+        )
+        
+        questions_result = questions_query.execute()
+        
+        # Create a map of question ID to question data
+        questions_map = {q["id"]: q for q in questions_result.data} if questions_result.data else {}
+        
+        # Format the response by combining answer and question data
+        formatted_answers = []
+        for answer_data in answers_result.data:
+            question_id = answer_data.get("question_id")
+            question = questions_map.get(question_id, {})
+            
+            # Format choices and answers as integers where possible
+            selected_answer = None
+            try:
+                selected_answer = int(answer_data.get("answer", "0"))
+            except ValueError:
+                selected_answer = 0
+                
+            correct_answer = None
+            try:
+                correct_answer = int(question.get("correct_answer", "0"))
+            except ValueError:
+                correct_answer = 0
+            
+            formatted_answer = {
+                "id": answer_data.get("id"),
+                "question_id": question_id,
+                "question_text": question.get("text", ""),
+                "choices": question.get("choices", []),
+                "selected_answer": selected_answer,
+                "correct_answer": correct_answer,
+                "is_correct": selected_answer == correct_answer,
+                "timestamp": answer_data.get("timestamp")
+            }
+            
+            formatted_answers.append(formatted_answer)
+        
+        return formatted_answers
+    except Exception as e:
+        logger.error(f"Error getting user answers: {str(e)}")
+        raise
+
+async def generate_additional_quiz_questions(paper_id: str, user_id: str) -> List[QuestionItem]:
+    """
+    Generate additional quiz questions based on user's quiz history and paper content.
+    
+    Args:
+        paper_id: The ID of the paper
+        user_id: The ID of the user
+        
+    Returns:
+        List[QuestionItem]: A list of newly generated quiz questions
+    """
+    logger.info(f"Starting additional quiz question generation for paper ID: {paper_id} and user ID: {user_id}")
+    
+    try:
+        # Get user's previous answers for this paper - reuse the get_user_answers function
+        formatted_answers = await get_user_answers(user_id, paper_id)
+        
+        # Separate into correct and incorrect answers
+        correct_answers = [a for a in formatted_answers if a["is_correct"]]
+        incorrect_answers = [a for a in formatted_answers if not a["is_correct"]]
+        
+        logger.info(f"User has answered {len(formatted_answers)} questions: {len(correct_answers)} correct, {len(incorrect_answers)} incorrect")
+        
+        # Get paper details and content - reuse get_paper_by_id function
+        paper = await get_paper_by_id(paper_id)
+        if not paper:
+            logger.warning(f"Paper {paper_id} not found")
+            return []
+            
+        paper_title = paper.get("title", "")
+        
+        # Fetch paper content - reuse existing PDF content extraction
+        pdf_content = ""
+        try:
+            pdf_path = await get_pdf_path_for_paper(paper_id)
+            if pdf_path:
+                pdf_content = await extract_text_from_pdf(pdf_path)
+            else:
+                # Fall back to abstract if PDF not available
+                pdf_content = paper.get("abstract", "")
+        except Exception as e:
+            logger.warning(f"Error getting PDF content: {str(e)}")
+            pdf_content = paper.get("abstract", "")
+            
+        # Format previous questions for the prompt
+        previous_questions = []
+        for answer in formatted_answers:
+            previous_questions.append({
+                "question": answer["question_text"],
+                "options": answer["choices"],
+                "correct_answer": answer["correct_answer"],
+                "user_answer": answer["selected_answer"],
+                "is_correct": answer["is_correct"]
+            })
+        
+        # Generate new targeted questions using LLM
+        from app.services.llm_service import generate_targeted_quiz_questions
+        new_questions_data = await generate_targeted_quiz_questions(
+            paper_content=pdf_content,
+            previous_questions=previous_questions,
+            correct_answers=correct_answers,
+            incorrect_answers=incorrect_answers,
+            paper_title=paper_title
+        )
+        
+        if not new_questions_data:
+            logger.warning("No new questions were generated")
+            return []
+            
+        logger.info(f"Generated {len(new_questions_data)} new quiz questions")
+        
+        # Generate question IDs first and assign them to both the QuestionItem objects and database entries
+        question_ids = [str(uuid.uuid4()) for _ in range(len(new_questions_data))]
+        
+        # Create question items from the data (even if DB operations fail later)
+        question_items = []
+        for i, question_data in enumerate(new_questions_data):
+            question_id = question_ids[i]
+            question_item = QuestionItem(
+                id=question_id,  # This is ignored by Pydantic model
+                question=question_data["question"],
+                options=question_data["options"],
+                correct_answer=question_data["correct_answer"],
+                explanation=question_data.get("explanation", "")
+            )
+            question_items.append(question_item)
+            
+        # Now try to store them in the database
+        try:
+            # Create a new learning item for the questions
+            item_id = str(uuid.uuid4())
+            item_data = {
+                "id": item_id,
+                "paper_id": paper_id,
+                "type": "quiz",
+                "level": "mixed",  # Or determine based on questions
+                "category": "additional",
+                "data": {
+                    "title": "Additional Quiz Questions",
+                    "description": "Additional questions generated based on your previous answers",
+                    "questions": new_questions_data
+                },
+                "order": 100  # Set a default order value
+            }
+            
+            # Store the learning item - make sure it succeeds before continuing
+            try:
+                # First insert the items record
+                item_insert_result = supabase.table("items").insert(item_data).execute()
+                
+                if not item_insert_result.data or len(item_insert_result.data) == 0:
+                    logger.warning(f"Failed to insert item into database, but will return generated questions anyway")
+                    return question_items
+                    
+                logger.info(f"Successfully created new item with ID {item_id}")
+                
+                # Now insert each question with transaction safety in mind
+                inserted_question_count = 0
+                for i, question_data in enumerate(new_questions_data):
+                    try:
+                        db_question = {
+                            "id": question_ids[i],  # Use the pre-generated question ID
+                            "item_id": item_id,
+                            "type": "multiple_choice",
+                            "text": question_data["question"],
+                            "choices": question_data["options"],
+                            "correct_answer": str(question_data["correct_answer"])
+                        }
+                        
+                        # Insert the question into database
+                        supabase.table("questions").insert(db_question).execute()
+                        inserted_question_count += 1
+                    except Exception as question_error:
+                        logger.error(f"Error inserting question {i+1}: {str(question_error)}")
+                        # Continue with other questions
+                
+                logger.info(f"Successfully inserted {inserted_question_count} out of {len(new_questions_data)} questions")
+                
+            except Exception as insert_error:
+                logger.error(f"Error storing item in database: {str(insert_error)}")
+                # Even if DB operations fail, return the generated questions
+        
+        except Exception as db_error:
+            logger.error(f"Database operation error: {str(db_error)}")
+            # Continue to return the questions even if DB storage fails
+        
+        return question_items
+    except Exception as e:
+        logger.error(f"Error generating additional quiz questions: {str(e)}", exc_info=True)
+        # Don't re-raise the exception, return empty list instead to gracefully handle errors
+        return []
+
+# Create an alias for get_paper_pdf to match the expected function name
+async def get_pdf_path_for_paper(paper_id: str) -> Optional[str]:
+    """
+    Get the PDF path for a paper by its ID.
+    
+    Args:
+        paper_id: The string ID of the paper
+        
+    Returns:
+        Path to the PDF file, or None if the paper doesn't exist
+    """
+    return await get_paper_pdf(UUID(paper_id))

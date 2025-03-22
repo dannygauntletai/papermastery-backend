@@ -1048,3 +1048,167 @@ async def generate_learning_content_json_with_pdf(
     except Exception as e:
         logger.error(f"Error generating learning content JSON with PDF: {str(e)}")
         raise LLMServiceError(f"Error generating learning content JSON with PDF: {str(e)}") 
+
+async def generate_highlight_explanation(
+    highlighted_text: str,
+    context: Optional[str] = None,
+    paper_title: Optional[str] = None,
+    max_tokens: int = 800
+) -> Dict[str, Any]:
+    """
+    Generate an explanation for the highlighted text.
+    
+    Args:
+        highlighted_text: The text highlighted by the user
+        context: Optional additional context around the highlighted text
+        paper_title: Optional title of the paper for context
+        max_tokens: Maximum tokens to generate
+        
+    Returns:
+        Dictionary with generated explanation and sources
+    """
+    # Similar implementation to generate_highlight_summary
+    # But with different prompt and parameters
+    try:
+        logger.info(f"Generating explanation for highlighted text: {highlighted_text[:50]}...")
+        
+        # Format the context if available
+        paper_context = f" from the paper '{paper_title}'" if paper_title else ""
+        surrounding_context = f"\n\nSurrounding Context:\n{context}" if context else ""
+        
+        prompt = f"""You are an AI research assistant. Explain the following highlighted text{paper_context} in detail.
+Break down complex concepts, provide relevant background information, and clarify technical terminology.
+Your explanation should be thorough but accessible.
+
+Highlighted Text:
+{highlighted_text}{surrounding_context}
+
+Provide a detailed explanation of this highlighted text, making it clear and understandable.
+You may use markdown formatting to improve readability. Aim for 3-6 sentences that thoroughly explain the concept.
+"""
+
+        # Generate the explanation with a slightly higher temperature for more creative explanations
+        explanation = await generate_text(prompt, max_tokens=max_tokens, temperature=0.3)
+        
+        return {
+            "response": explanation,
+            "sources": []  # No sources used for explanations
+        }
+    except Exception as e:
+        error_msg = f"Error generating highlight explanation: {str(e)}"
+        logger.error(error_msg)
+        raise LLMServiceError(error_msg)
+
+async def generate_targeted_quiz_questions(
+    paper_content: str,
+    previous_questions: List[Dict],
+    correct_answers: List[Dict],
+    incorrect_answers: List[Dict],
+    paper_title: str = "",
+    num_questions: int = 10,
+    temperature: float = 0.7,
+    max_tokens: int = 2000
+) -> List[Dict]:
+    """
+    Generate targeted quiz questions based on user's quiz history.
+    
+    Args:
+        paper_content: The content of the paper
+        previous_questions: Previously answered questions
+        correct_answers: Questions answered correctly
+        incorrect_answers: Questions answered incorrectly
+        paper_title: The title of the paper
+        num_questions: Number of questions to generate
+        temperature: Controls randomness of the output
+        max_tokens: Maximum tokens to generate
+        
+    Returns:
+        List of quiz question dictionaries with 'question', 'options', 'correct_answer', and 'explanation' fields
+    """
+    logger.info(f"Generating targeted quiz questions for paper: {paper_title}")
+    
+    # Get the prompt using our new template function
+    from app.templates.prompts.learning_content import get_additional_quiz_questions_prompt
+    
+    prompt = get_additional_quiz_questions_prompt(
+        paper_title=paper_title,
+        paper_content=paper_content,
+        correct_answers=correct_answers,
+        incorrect_answers=incorrect_answers,
+        num_questions=num_questions
+    )
+    
+    # Use the same LLM generation pattern as other structured content
+    try:
+        # Reuse the LLM interaction pattern from generate_structured_extraction
+        response_text = await generate_text(
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+        
+        # Parse the JSON response - reuse existing JSON parsing logic
+        questions_data = []
+        
+        # Try multiple JSON extraction methods, similar to generate_structured_extraction
+        try:
+            import json
+            questions_data = json.loads(response_text)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse JSON response directly, attempting to extract JSON from text")
+            import re
+            json_match = re.search(r'\[\s*\{.*\}\s*\]', response_text, re.DOTALL)
+            if json_match:
+                try:
+                    questions_data = json.loads(json_match.group(0))
+                except json.JSONDecodeError:
+                    logger.error("Failed to parse extracted JSON")
+        
+        # Validate the questions data
+        if not questions_data or not isinstance(questions_data, list):
+            logger.error("Invalid questions data format, expected a list")
+            return []
+        
+        # Process and validate each question
+        valid_questions = []
+        for i, question in enumerate(questions_data):
+            if not isinstance(question, dict):
+                logger.warning(f"Question {i} is not a dictionary, skipping")
+                continue
+                
+            # Ensure all required fields are present
+            if not all(key in question for key in ["question", "options", "correct_answer"]):
+                logger.warning(f"Question {i} is missing required fields, skipping")
+                continue
+                
+            # Ensure options is a list with at least 2 items
+            options = question.get("options", [])
+            if not isinstance(options, list) or len(options) < 2:
+                logger.warning(f"Question {i} has invalid options format, skipping")
+                continue
+                
+            # Ensure correct_answer is a valid index
+            correct_answer = question.get("correct_answer")
+            if not isinstance(correct_answer, (int, str)) or (
+                isinstance(correct_answer, int) and (correct_answer < 0 or correct_answer >= len(options))
+            ) or (
+                isinstance(correct_answer, str) and not correct_answer.isdigit()
+            ):
+                logger.warning(f"Question {i} has invalid correct_answer format, skipping")
+                continue
+                
+            # Convert string correct_answer to int if needed
+            if isinstance(correct_answer, str) and correct_answer.isdigit():
+                question["correct_answer"] = int(correct_answer)
+                
+            # Add default explanation if missing
+            if "explanation" not in question or not question["explanation"]:
+                question["explanation"] = f"The correct answer is {options[int(question['correct_answer'])]}"
+                
+            valid_questions.append(question)
+        
+        logger.info(f"Successfully generated {len(valid_questions)} valid questions out of {len(questions_data)} total")
+        return valid_questions
+    except Exception as e:
+        logger.error(f"Error generating targeted quiz questions: {str(e)}", exc_info=True)
+        return [] 

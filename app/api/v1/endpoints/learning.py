@@ -26,6 +26,7 @@ from app.services.learning_service import (
     submit_answer,
     generate_flashcards,
     generate_quiz_questions,
+    generate_additional_quiz_questions,
     record_paper_progress
 )
 from app.api.dependencies import get_current_user
@@ -300,6 +301,29 @@ async def get_quiz_questions(
     except Exception as e:
         logger.error(f"Error getting quiz questions: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error getting quiz questions: {str(e)}")
+
+@router.post("/papers/{paper_id}/generate-additional-questions", response_model=List[QuestionItem])
+async def generate_additional_questions(
+    paper_id: str = Path(..., description="The ID of the paper"),
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Generate additional quiz questions based on user's quiz history and paper content.
+    
+    This endpoint analyzes a user's previous answers and generates new targeted questions.
+    """
+    try:
+        questions = await generate_additional_quiz_questions(paper_id, user_id)
+        if not questions:
+            logger.warning("No additional questions were generated or retrieved")
+            # Return empty list instead of raising an error for a better user experience
+            return []
+        return questions
+    except Exception as e:
+        logger.error(f"Error generating additional quiz questions: {str(e)}")
+        # Instead of raising an HTTP exception, return an empty list
+        # This way, the frontend can still display a friendly message
+        return []
 
 @router.post("/papers/{paper_id}/progress", status_code=204)
 async def update_paper_progress(
