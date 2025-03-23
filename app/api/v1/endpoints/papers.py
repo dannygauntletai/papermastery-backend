@@ -719,6 +719,41 @@ async def run_immediate_processing(file_content: bytes, paper_id: UUID, source_u
             logger.error(f"Error generating summaries for paper {paper_id}: {str(summary_error)}")
             # Continue with further processing even if summarization fails
         
+        # Save the full_text to the database immediately after summarization
+        logger.info(f"Saving full text for paper {paper_id}")
+        try:
+            await update_paper(paper_id, {
+                "full_text": full_text,
+                "tags": {"status": "processing", "processing_stage": "text_extracted"}
+            })
+            logger.info(f"Successfully saved full text for paper {paper_id}")
+        except Exception as full_text_error:
+            logger.error(f"Error saving full text for paper {paper_id}: {str(full_text_error)}")
+            
+            # Try to save with a truncated or sanitized version of the text
+            try:
+                # Further sanitize the text by removing any potential problematic characters
+                import re
+                sanitized_text = re.sub(r'[^\x20-\x7E\n\r\t]', '', full_text)
+                # Truncate if still too large
+                if len(sanitized_text) > 1000000:  # Limit to 1MB
+                    sanitized_text = sanitized_text[:1000000] + "... [truncated]"
+                
+                await update_paper(paper_id, {
+                    "full_text": sanitized_text,
+                    "tags": {"status": "processing", "processing_stage": "text_extracted_partial"}
+                })
+                logger.info(f"Successfully saved sanitized full text for paper {paper_id}")
+                # Update the local full_text with the sanitized version for further processing
+                full_text = sanitized_text
+            except Exception as sanitize_error:
+                logger.error(f"Failed to save even sanitized full text for paper {paper_id}: {str(sanitize_error)}")
+                # Continue with further processing even if full text saving fails
+                await update_paper(paper_id, {
+                    "tags": {"status": "processing", "processing_stage": "text_extraction_failed", 
+                            "error_message": "Could not store full text due to encoding or size issues"}
+                })
+        
         # Start additional processing in background (abstract extraction, related papers, etc.)
         background_tasks = BackgroundTasks()
         background_tasks.add_task(
@@ -831,7 +866,6 @@ async def process_additional_paper_data(file_content: bytes, paper_id: UUID, ful
             
         # Mark paper processing as complete
         await update_paper(paper_id, {
-            "full_text": full_text,
             "tags": {"status": "completed", "processing_stage": "paper_complete"}
         })
         

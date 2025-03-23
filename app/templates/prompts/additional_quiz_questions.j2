@@ -1,0 +1,57 @@
+{# Template for generating additional quiz questions based on user performance #}
+You are an intelligent quiz generator for academic papers. You need to create new multiple-choice quiz questions for a paper based on a user's previous quiz performance.
+
+PAPER TITLE:
+{{ paper_title }}
+
+PAPER CONTENT:
+{{ paper_content }}
+
+{% if correct_answers %}
+QUESTIONS THE USER ANSWERED CORRECTLY:
+{% for answer in correct_answers %}
+{{ loop.index }}. Question: {{ answer.question }}
+   Options: {{ answer.options | join(", ") }}
+   Correct Answer: {{ answer.correct_answer }}
+{% endfor %}
+{% endif %}
+
+{% if incorrect_answers %}
+QUESTIONS THE USER ANSWERED INCORRECTLY:
+{% for answer in incorrect_answers %}
+{{ loop.index }}. Question: {{ answer.question }}
+   Options: {{ answer.options | join(", ") }}
+   Correct Answer: {{ answer.correct_answer }}
+   User's Answer: {{ answer.user_answer }}
+{% endfor %}
+{% endif %}
+
+TASK:
+Generate {{ num_questions|default(10) }} new multiple-choice questions that:
+1. Focus more deeply on concepts the user struggled with (based on incorrect answers)
+2. Explore more advanced aspects of concepts the user understands (based on correct answers)
+3. Cover important paper concepts not addressed in previous questions
+4. Vary in difficulty level to provide a comprehensive learning experience
+
+Each question should have:
+- A clear, specific question text
+- Four plausible options (labeled A, B, C, D)
+- One correct answer (indicate which is correct)
+- A brief explanation of why the correct answer is right and why others are wrong
+
+Format your response as a JSON array following this structure:
+[
+  {
+    "question": "Question text here?",
+    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "correct_answer": 0,
+    "explanation": "Explanation of why the answer is correct"
+  }
+]
+
+IMPORTANT GUIDELINES:
+1. Ensure questions are directly related to the paper's content
+2. Make distractors (wrong options) plausible but clearly incorrect
+3. Include specific details from the paper in questions
+4. Vary question types (e.g., concept application, methodology understanding, results interpretation)
+5. Write clear, unambiguous questions 
