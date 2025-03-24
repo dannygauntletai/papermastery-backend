@@ -5,8 +5,9 @@ import uuid
 import json
 import hashlib
 from datetime import datetime
+import logging
 
-from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary, SourceType, PaperSubmitResponse
+from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary, SourceType, PaperSubmitResponse, HighlightRequest, HighlightResponse
 from app.core.logger import get_logger
 from app.services.paper_service import (
     fetch_arxiv_metadata,
@@ -24,11 +25,13 @@ from app.database.supabase_client import (
     list_papers as db_list_papers,
     add_paper_to_user,
     create_conversation,
-    get_user_paper_conversations
+    get_user_paper_conversations,
+    insert_message
 )
 from app.services.storage_service import upload_file_to_storage, get_file_url
 from app.dependencies import validate_environment, get_current_user
-from app.core.exceptions import InvalidPDFUrlError, PDFDownloadError, StorageError
+from app.core.exceptions import InvalidPDFUrlError, PDFDownloadError, StorageError, LLMServiceError
+from app.services.llm_service import generate_highlight_summary, generate_highlight_explanation
 
 logger = get_logger(__name__)
 
@@ -882,4 +885,335 @@ async def process_additional_paper_data(file_content: bytes, paper_id: UUID, ful
         
     except Exception as e:
         logger.error(f"Error processing additional data for paper {paper_id}: {str(e)}")
-        await update_paper(paper_id, {"tags": {"status": "error", "error_message": f"Additional processing error: {str(e)}"}}) 
+        await update_paper(paper_id, {"tags": {"status": "error", "error_message": f"Additional processing error: {str(e)}"}})
+
+@router.post("/{paper_id}/summarize-highlight", response_model=HighlightResponse)
+async def summarize_highlighted_text(
+    paper_id: UUID,
+    highlight_request: HighlightRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """
+    Summarize a highlighted text section from a paper.
+    
+    This endpoint takes a section of highlighted text and returns a concise summary,
+    focusing on the key points and maintaining the original meaning.
+    
+    Args:
+        paper_id: UUID of the paper the highlight is from
+        highlight_request: Contains the highlighted text and optional surrounding context
+        current_user: Optional current user information
+        
+    Returns:
+        A response containing the generated summary
+        
+    Raises:
+        HTTPException: If paper not found or LLM service error occurs
+    """
+    user_id = current_user.get("id", "anonymous") if current_user else "anonymous"
+    logger.info(f"[HIGHLIGHT-SUMMARY] Request received for paper={paper_id}, user={user_id}")
+    logger.debug(f"[HIGHLIGHT-SUMMARY] Highlighted text length: {len(highlight_request.text)} chars, context provided: {highlight_request.context is not None}")
+    
+    try:
+        # Check if paper exists (for validation and to get title)
+        logger.debug(f"[HIGHLIGHT-SUMMARY] Retrieving paper {paper_id} from database")
+        paper = await get_paper_by_id(paper_id)
+        if not paper:
+            logger.warning(f"[HIGHLIGHT-SUMMARY] Paper {paper_id} not found while attempting to summarize highlight for user {user_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Paper not found"
+            )
+        
+        paper_title = paper.get("title", "Unknown title")
+        logger.info(f"[HIGHLIGHT-SUMMARY] Found paper: '{paper_title}' (ID: {paper_id})")
+        
+        # Generate summary using LLM service
+        logger.info(f"[HIGHLIGHT-SUMMARY] Calling LLM service to generate summary for paper '{paper_title}'")
+        result = await generate_highlight_summary(
+            highlighted_text=highlight_request.text,
+            context=highlight_request.context,
+            paper_title=paper_title
+        )
+        
+        response_length = len(result.get("response", "")) if result else 0
+        logger.info(f"[HIGHLIGHT-SUMMARY] Successfully generated summary ({response_length} chars) for paper {paper_id}")
+        logger.debug(f"[HIGHLIGHT-SUMMARY] Summary response preview: {result.get('response', '')[:100]}...")
+        
+        # Store the highlight summary in the database
+        try:
+            # Get paper conversations to find the right conversation ID
+            conversations = await get_user_paper_conversations(user_id, str(paper_id))
+            
+            # Use the first conversation or create a new one if none exists
+            conversation_id = None
+            if conversations and len(conversations) > 0:
+                conversation_id = conversations[0].get("id")
+                logger.debug(f"[HIGHLIGHT-SUMMARY] Using existing conversation {conversation_id} for paper {paper_id}")
+            else:
+                # Create a new conversation
+                new_conversation = await create_conversation({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "paper_id": str(paper_id)
+                })
+                conversation_id = new_conversation.get("id")
+                logger.debug(f"[HIGHLIGHT-SUMMARY] Created new conversation {conversation_id} for paper {paper_id}")
+            
+            # Prepare message data
+            message_data = {
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "paper_id": str(paper_id),
+                "text": result.get("response", ""),
+                "sender": "bot",
+                # Additional fields for highlight operations
+                "highlighted_text": highlight_request.text,
+                "highlight_type": "summary",
+                "created_at": datetime.now().isoformat()
+            }
+            
+            # Insert message into database
+            await insert_message(message_data)
+            logger.info(f"[HIGHLIGHT-SUMMARY] Stored summary in database for paper {paper_id}")
+        
+        except Exception as db_error:
+            # Log the error but don't fail the request
+            logger.error(f"[HIGHLIGHT-SUMMARY] Error storing summary in database: {str(db_error)}")
+        
+        return result
+        
+    except LLMServiceError as e:
+        error_message = str(e)
+        logger.error(f"[HIGHLIGHT-SUMMARY] LLM service error for paper={paper_id}, user={user_id}: {error_message}")
+        # Log additional details that might help with debugging
+        if hasattr(e, "response"):
+            logger.error(f"[HIGHLIGHT-SUMMARY] LLM service response details: {e.response}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating summary: {error_message}"
+        )
+    except Exception as e:
+        error_message = str(e)
+        logger.error(f"[HIGHLIGHT-SUMMARY] Unexpected error for paper={paper_id}, user={user_id}: {error_message}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred while generating the summary"
+        )
+
+
+@router.post("/{paper_id}/explain-highlight", response_model=HighlightResponse)
+async def explain_highlighted_text(
+    paper_id: UUID,
+    highlight_request: HighlightRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """
+    Generate an explanation for a highlighted text section from a paper.
+    
+    This endpoint takes a section of highlighted text and returns a detailed explanation,
+    breaking down complex concepts and clarifying technical terminology.
+    
+    Args:
+        paper_id: UUID of the paper the highlight is from
+        highlight_request: Contains the highlighted text and optional surrounding context
+        current_user: Optional current user information
+        
+    Returns:
+        A response containing the generated explanation
+        
+    Raises:
+        HTTPException: If paper not found or LLM service error occurs
+    """
+    user_id = current_user.get("id", "anonymous") if current_user else "anonymous"
+    logger.info(f"[HIGHLIGHT-EXPLAIN] Request received for paper={paper_id}, user={user_id}")
+    logger.debug(f"[HIGHLIGHT-EXPLAIN] Highlighted text length: {len(highlight_request.text)} chars, context provided: {highlight_request.context is not None}")
+    
+    try:
+        # Check if paper exists (for validation and to get title)
+        logger.debug(f"[HIGHLIGHT-EXPLAIN] Retrieving paper {paper_id} from database")
+        paper = await get_paper_by_id(paper_id)
+        if not paper:
+            logger.warning(f"[HIGHLIGHT-EXPLAIN] Paper {paper_id} not found while attempting to explain highlight for user {user_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Paper not found"
+            )
+        
+        paper_title = paper.get("title", "Unknown title")
+        logger.info(f"[HIGHLIGHT-EXPLAIN] Found paper: '{paper_title}' (ID: {paper_id})")
+        
+        # Generate explanation using LLM service
+        logger.info(f"[HIGHLIGHT-EXPLAIN] Calling LLM service to generate explanation for paper '{paper_title}'")
+        result = await generate_highlight_explanation(
+            highlighted_text=highlight_request.text,
+            context=highlight_request.context,
+            paper_title=paper_title
+        )
+        
+        response_length = len(result.get("response", "")) if result else 0
+        logger.info(f"[HIGHLIGHT-EXPLAIN] Successfully generated explanation ({response_length} chars) for paper {paper_id}")
+        logger.debug(f"[HIGHLIGHT-EXPLAIN] Explanation response preview: {result.get('response', '')[:100]}...")
+        
+        # Store the highlight explanation in the database
+        try:
+            # Get paper conversations to find the right conversation ID
+            conversations = await get_user_paper_conversations(user_id, str(paper_id))
+            
+            # Use the first conversation or create a new one if none exists
+            conversation_id = None
+            if conversations and len(conversations) > 0:
+                conversation_id = conversations[0].get("id")
+                logger.debug(f"[HIGHLIGHT-EXPLAIN] Using existing conversation {conversation_id} for paper {paper_id}")
+            else:
+                # Create a new conversation
+                new_conversation = await create_conversation({
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "paper_id": str(paper_id)
+                })
+                conversation_id = new_conversation.get("id")
+                logger.debug(f"[HIGHLIGHT-EXPLAIN] Created new conversation {conversation_id} for paper {paper_id}")
+            
+            # Prepare message data
+            message_data = {
+                "id": str(uuid.uuid4()),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "paper_id": str(paper_id),
+                "text": result.get("response", ""),
+                "sender": "bot",
+                # Additional fields for highlight operations
+                "highlighted_text": highlight_request.text,
+                "highlight_type": "explanation",
+                "created_at": datetime.now().isoformat()
+            }
+            
+            # Insert message into database
+            await insert_message(message_data)
+            logger.info(f"[HIGHLIGHT-EXPLAIN] Stored explanation in database for paper {paper_id}")
+        
+        except Exception as db_error:
+            # Log the error but don't fail the request
+            logger.error(f"[HIGHLIGHT-EXPLAIN] Error storing explanation in database: {str(db_error)}")
+        
+        return result
+        
+    except LLMServiceError as e:
+        error_message = str(e)
+        logger.error(f"[HIGHLIGHT-EXPLAIN] LLM service error for paper={paper_id}, user={user_id}: {error_message}")
+        # Log additional details that might help with debugging
+        if hasattr(e, "response"):
+            logger.error(f"[HIGHLIGHT-EXPLAIN] LLM service response details: {e.response}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating explanation: {error_message}"
+        )
+    except Exception as e:
+        error_message = str(e)
+        logger.error(f"[HIGHLIGHT-EXPLAIN] Unexpected error for paper={paper_id}, user={user_id}: {error_message}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred while generating the explanation"
+        )
+
+@router.post("/debug/set-log-level")
+async def set_debug_log_level(
+    level: str = Query(..., description="Logging level to set (DEBUG, INFO, WARNING, ERROR, CRITICAL)"),
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """
+    Set the logging level for debugging purposes.
+    
+    This endpoint allows dynamically changing the log level to assist with debugging.
+    Only accessible to authenticated users.
+    
+    Args:
+        level: The logging level to set (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        current_user: Current authenticated user
+        
+    Returns:
+        Confirmation message with the new log level
+    """
+    # Only allow authenticated users
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required"
+        )
+    
+    # Map string level to logging module level
+    level_map = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL
+    }
+    
+    if level.upper() not in level_map:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid log level. Must be one of: {', '.join(level_map.keys())}"
+        )
+    
+    # Get main logger
+    from app.core.logger import get_logger
+    main_logger = get_logger("arxiv_mastery")
+    
+    # Set the new log level
+    numeric_level = level_map[level.upper()]
+    main_logger.setLevel(numeric_level)
+    
+    # Also set the level for highlight-specific loggers
+    highlight_loggers = [
+        get_logger("arxiv_mastery.app.api.v1.endpoints.papers"),
+        get_logger("arxiv_mastery.app.services.llm_service")
+    ]
+    
+    for logger in highlight_loggers:
+        logger.setLevel(numeric_level)
+    
+    logger.info(f"Log level changed to {level.upper()} by user {current_user.get('id', 'unknown')}")
+    
+    return {
+        "status": "success",
+        "message": f"Log level set to {level.upper()}",
+        "affected_loggers": ["arxiv_mastery", "arxiv_mastery.app.api.v1.endpoints.papers", "arxiv_mastery.app.services.llm_service"]
+    }
+
+@router.post("/{paper_id}/summarize", response_model=HighlightResponse)
+async def summarize_highlighted_text_alias(
+    paper_id: UUID,
+    highlight_request: HighlightRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """
+    Alias endpoint for summarize-highlight to maintain compatibility with frontend.
+    
+    This endpoint has the same functionality as /{paper_id}/summarize-highlight but
+    uses the URL format expected by the frontend.
+    """
+    # Ensure current_user is properly formatted as a dictionary if it's a string
+    current_user_dict = {"id": current_user} if isinstance(current_user, str) else current_user
+    # Call the original implementation
+    return await summarize_highlighted_text(paper_id, highlight_request, current_user_dict)
+
+
+@router.post("/{paper_id}/explain", response_model=HighlightResponse)
+async def explain_highlighted_text_alias(
+    paper_id: UUID,
+    highlight_request: HighlightRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """
+    Alias endpoint for explain-highlight to maintain compatibility with frontend.
+    
+    This endpoint has the same functionality as /{paper_id}/explain-highlight but
+    uses the URL format expected by the frontend.
+    """
+    # Ensure current_user is properly formatted as a dictionary if it's a string
+    current_user_dict = {"id": current_user} if isinstance(current_user, str) else current_user
+    # Call the original implementation
+    return await explain_highlighted_text(paper_id, highlight_request, current_user_dict) 
