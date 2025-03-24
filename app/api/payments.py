@@ -4,9 +4,13 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional
 from app.api.dependencies import get_current_user
 from app.core.logger import get_logger
+from app.core.config import get_settings
 
 # Set up logger first
 logger = get_logger(__name__)
+
+# Get settings
+settings = get_settings()
 
 # Set up router
 router = APIRouter(prefix="/payments", tags=["payments"])
@@ -124,15 +128,50 @@ async def handle_webhook(request: Request) -> Dict[str, str]:
     """
     try:
         # Get the webhook payload
+        payload_bytes = await request.body()
         payload = await request.json()
         
+        # Get Stripe signature from headers
+        sig_header = request.headers.get("stripe-signature", "")
+        webhook_secret = getattr(settings, 'STRIPE_WEBHOOK_SECRET', None)
+        
+        logger.info(f"Received webhook event: {payload.get('type', 'unknown')}")
+        
+        # If we have a webhook secret, verify the signature
+        if webhook_secret and sig_header:
+            try:
+                import stripe
+                event = stripe.Webhook.construct_event(
+                    payload_bytes, sig_header, webhook_secret
+                )
+                logger.info(f"Webhook signature verification passed: {event['id']}")
+                payload = event
+            except stripe.error.SignatureVerificationError as e:
+                logger.error(f"⚠️ Webhook signature verification failed: {str(e)}")
+                raise HTTPException(status_code=400, detail="Invalid webhook signature")
+            except Exception as e:
+                logger.error(f"⚠️ Error verifying webhook signature: {str(e)}")
+        else:
+            logger.info("No webhook secret configured or no signature header - skipping verification")
+            # For a proper webhook, we should always have these, so let's log a warning
+            if not webhook_secret:
+                logger.warning("STRIPE_WEBHOOK_SECRET is not configured. Set this in your environment variables.")
+            if not sig_header:
+                logger.warning("No stripe-signature header in request. Check your webhook configuration in Stripe dashboard.")
+                
+        # Verify stripe_service is initialized
+        if not stripe_service:
+            error_message = "Stripe service is not available - cannot process webhook"
+            logger.error(error_message)
+            raise HTTPException(status_code=500, detail=error_message)
+                
         # Handle the event
         stripe_service.handle_webhook_event(payload)
         
-        return {"status": "success"}
+        return {"status": "success", "event_type": payload.get('type', 'unknown')}
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to process webhook")
+        raise HTTPException(status_code=500, detail=f"Failed to process webhook: {str(e)}")
 
 
 class TestSubscriptionRequest(BaseModel):
