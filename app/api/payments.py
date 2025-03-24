@@ -1,0 +1,243 @@
+"""API endpoints for payment processing and subscription management."""
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+from typing import Dict, Any, Optional
+from app.api.dependencies import get_current_user
+from app.core.logger import get_logger
+
+# Set up logger first
+logger = get_logger(__name__)
+
+# Set up router
+router = APIRouter(prefix="/payments", tags=["payments"])
+
+# Try to import stripe_service, but handle import errors gracefully
+stripe_service: Optional[object] = None
+try:
+    from app.services.stripe_service import stripe_service
+except ValueError as e:
+    # Missing Stripe configuration
+    logger.error(f"Stripe service initialization failed: {str(e)}")
+    # stripe_service will remain None
+
+
+class CheckoutRequest(BaseModel):
+    """Request model for creating a Stripe checkout session."""
+    productType: str
+
+
+class SubscriptionStatusResponse(BaseModel):
+    """Response model for subscription status check."""
+    hasActiveSubscription: bool
+
+
+@router.post("/checkout")
+async def create_checkout_session(request: CheckoutRequest, current_user: str = Depends(get_current_user)) -> Dict[str, str]:
+    """
+    Create a Stripe checkout session for subscription payment.
+    
+    Args:
+        request: The checkout request with product type
+        current_user: The authenticated user ID
+        
+    Returns:
+        Dict containing the checkout session URL
+    """
+    # Check if stripe_service is available
+    if stripe_service is None:
+        error_message = "Stripe service is not available - missing required configuration"
+        logger.error(error_message)
+        raise HTTPException(status_code=500, detail=error_message)
+        
+    try:
+        # Base URL for redirects
+        base_url = "http://localhost:8080"  # Match the frontend port
+        
+        # Create success and cancel URLs
+        success_url = f"{base_url}/subscription/success"
+        cancel_url = f"{base_url}/subscription/cancel"
+        
+        # Create checkout session
+        checkout = stripe_service.create_checkout_session(
+            product_type=request.productType,
+            user_id=current_user,  # current_user is already the user ID string
+            success_url=success_url,
+            cancel_url=cancel_url
+        )
+        
+        # Make sure the response matches what the frontend expects
+        if "url" in checkout:
+            return {"url": checkout["url"]}
+        else:
+            logger.error(f"Missing URL in checkout response: {checkout}")
+            raise HTTPException(status_code=500, detail="Invalid checkout session response")
+    except ValueError as e:
+        # Specific error for missing configuration or validation issues
+        error_message = f"Stripe configuration error: {str(e)}"
+        logger.error(error_message)
+        raise HTTPException(status_code=500, detail=error_message)
+    except Exception as e:
+        logger.error(f"Error creating checkout session: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create checkout session: {str(e)}")
+
+
+@router.get("/subscription-status")
+async def check_subscription_status(current_user: str = Depends(get_current_user)) -> SubscriptionStatusResponse:
+    """
+    Check if the current user has an active subscription.
+    
+    Args:
+        current_user: The authenticated user ID
+        
+    Returns:
+        SubscriptionStatusResponse indicating if user has an active subscription
+    """
+    # Check if stripe_service is available
+    if stripe_service is None:
+        error_message = "Stripe service is not available - missing required configuration"
+        logger.error(error_message)
+        raise HTTPException(status_code=500, detail=error_message)
+        
+    try:
+        is_subscribed = stripe_service.check_subscription_status(current_user)
+        return SubscriptionStatusResponse(hasActiveSubscription=is_subscribed)
+    except ValueError as e:
+        # Specific error for missing configuration or validation issues
+        error_message = f"Stripe configuration error: {str(e)}"
+        logger.error(error_message)
+        raise HTTPException(status_code=500, detail=error_message)
+    except Exception as e:
+        logger.error(f"Error checking subscription status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to check subscription status: {str(e)}")
+
+
+@router.post("/webhook")
+async def handle_webhook(request: Request) -> Dict[str, str]:
+    """
+    Handle Stripe webhook events.
+    
+    Args:
+        request: The HTTP request containing the webhook payload
+        
+    Returns:
+        Dict with success message
+    """
+    try:
+        # Get the webhook payload
+        payload = await request.json()
+        
+        # Handle the event
+        stripe_service.handle_webhook_event(payload)
+        
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Error processing webhook: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to process webhook")
+
+
+class TestSubscriptionRequest(BaseModel):
+    """Request model for creating a test subscription."""
+    sessionId: str
+
+
+@router.post("/create-test-subscription")
+async def create_test_subscription(
+    request: TestSubscriptionRequest, 
+    current_user: str = Depends(get_current_user)
+) -> Dict[str, str]:
+    """
+    Create a test subscription directly in the database.
+    This is only for development/testing purposes.
+    
+    Args:
+        request: The test subscription request
+        current_user: The authenticated user ID
+        
+    Returns:
+        Dict with success message
+    """
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+        
+    try:
+        # Use Supabase client to insert a subscription
+        from app.database.supabase_client import supabase
+        from datetime import datetime, timedelta
+        
+        # Create a subscription that lasts for 30 days
+        start_date = datetime.now()
+        end_date = start_date + timedelta(days=30)
+        
+        # Create subscription data
+        subscription_data = {
+            "id": f"test_sub_{request.sessionId[-8:]}",  # Generate a pseudo-random ID
+            "user_id": current_user,
+            "status": "active",
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "created_at": start_date.isoformat()
+        }
+        
+        logger.info(f"Preparing to insert test subscription data: {subscription_data}")
+        
+        try:
+            # Insert subscription record
+            result = supabase.table("subscriptions").insert(subscription_data).execute()
+            
+            # Also create a payment record
+            payment_data = {
+                "user_id": current_user,
+                "amount": 19.99,  # Standard price
+                "status": "completed",
+                "transaction_id": f"test_tx_{request.sessionId[-8:]}",
+                "subscription_id": subscription_data["id"],
+                "created_at": start_date.isoformat()
+            }
+            
+            # Insert payment record
+            payment_result = supabase.table("payments").insert(payment_data).execute()
+            
+            logger.info(f"Created test subscription for user {current_user}")
+            logger.info(f"Subscription record: {result.data}")
+            logger.info(f"Payment record: {payment_result.data}")
+            
+            return {
+                "status": "success", 
+                "message": "Test subscription created",
+                "subscription": result.data[0],
+                "payment": payment_result.data[0]
+            }
+        except Exception as e:
+            logger.error(f"Error creating test subscription: {str(e)}")
+            
+            # Try with a UUID
+            try:
+                import uuid
+                subscription_data["id"] = str(uuid.uuid4())
+                logger.info(f"Retrying with UUID: {subscription_data['id']}")
+                result = supabase.table("subscriptions").insert(subscription_data).execute()
+                
+                payment_data = {
+                    "user_id": current_user,
+                    "amount": 19.99,
+                    "status": "completed",
+                    "transaction_id": f"test_tx_{request.sessionId[-8:]}",
+                    "subscription_id": subscription_data["id"],
+                    "created_at": start_date.isoformat()
+                }
+                
+                payment_result = supabase.table("payments").insert(payment_data).execute()
+                
+                logger.info(f"Created test subscription with UUID for user {current_user}")
+                return {
+                    "status": "success", 
+                    "message": "Test subscription created with UUID",
+                    "subscription": result.data[0],
+                    "payment": payment_result.data[0]
+                }
+            except Exception as inner_e:
+                logger.error(f"Error creating test subscription with UUID: {str(inner_e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to create test subscription: {str(inner_e)}")
+    except Exception as e:
+        logger.error(f"Error creating test subscription: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create test subscription: {str(e)}")

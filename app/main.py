@@ -16,6 +16,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.routing import APIRoute
 from app.dependencies import validate_environment
 from app.api.v1.endpoints import chat, papers, learning, waiting_list, consulting
+from app.api import payments
 from app.core.config import get_settings
 from app.core.logger import get_logger
 import inspect
@@ -136,6 +137,7 @@ app.include_router(chat.router, prefix=f"{settings.API_V1_STR}")
 app.include_router(learning.router, prefix=f"{settings.API_V1_STR}")
 app.include_router(waiting_list.router, prefix=f"{settings.API_V1_STR}")
 app.include_router(consulting.router, prefix=f"{settings.API_V1_STR}")
+app.include_router(payments.router, prefix=f"{settings.API_V1_STR}")
 
 # Custom OpenAPI schema to properly document the API
 def custom_openapi():

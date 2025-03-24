@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     STRIPE_SECRET_KEY: str = Field(default_factory=lambda: os.getenv("STRIPE_SECRET_KEY", ""))
     STRIPE_WEBHOOK_SECRET: str = Field(default_factory=lambda: os.getenv("STRIPE_WEBHOOK_SECRET", ""))
     STRIPE_PLATFORM_FEE_PERCENTAGE: float = Field(default_factory=lambda: float(os.getenv("STRIPE_PLATFORM_FEE_PERCENTAGE", "5")))
+    STRIPE_SUBSCRIPTION_PRICE_ID: str = Field(default_factory=lambda: os.getenv("STRIPE_SUBSCRIPTION_PRICE_ID", "price_test_placeholder"))
     
     # Consulting System Settings
     CONSULTING_SUBSCRIPTION_PRICE: float = Field(default_factory=lambda: float(os.getenv("CONSULTING_SUBSCRIPTION_PRICE", "19.99")))
