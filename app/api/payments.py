@@ -214,7 +214,8 @@ async def create_test_subscription(
             "status": "active",
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
-            "created_at": start_date.isoformat()
+            "created_at": start_date.isoformat(),
+            "stripe_id": f"sub_test_{request.sessionId[-8:]}"  # Add a fake stripe ID
         }
         
         logger.info(f"Preparing to insert test subscription data: {subscription_data}")
@@ -229,7 +230,8 @@ async def create_test_subscription(
                 "amount": 19.99,  # Standard price
                 "status": "completed",
                 "transaction_id": f"test_tx_{request.sessionId[-8:]}",
-                "subscription_id": subscription_data["id"],
+                "subscription_id": subscription_data["id"],  # Link to subscription
+                "stripe_subscription_id": f"sub_test_{request.sessionId[-8:]}",  # Add a fake stripe subscription ID
                 "created_at": start_date.isoformat()
             }
             
@@ -262,6 +264,7 @@ async def create_test_subscription(
                     "status": "completed",
                     "transaction_id": f"test_tx_{request.sessionId[-8:]}",
                     "subscription_id": subscription_data["id"],
+                    "stripe_subscription_id": f"sub_test_{request.sessionId[-8:]}",  # Add a fake stripe subscription ID
                     "created_at": start_date.isoformat()
                 }
                 

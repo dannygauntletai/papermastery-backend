@@ -168,9 +168,9 @@ class StripeService:
                                     }
                                     
                                     # Insert it
-                                    subabase_result = supabase.table("subscriptions").insert(sub_data).execute()
+                                    supabase_result = supabase.table("subscriptions").insert(sub_data).execute()
                                     logger.info(f"Created missing subscription record from Stripe: {sub_data}")
-                                    logger.info(f"Supabase result: {subabase_result.data}")
+                                    logger.info(f"Supabase result: {supabase_result.data}")
                                     return True
                     except Exception as stripe_error:
                         logger.error(f"Error checking Stripe for active subscriptions: {str(stripe_error)}")
@@ -252,8 +252,12 @@ class StripeService:
             
             import uuid
             
+            # Generate UUIDs for payment and subscription
+            payment_id = str(uuid.uuid4())
+            subscription_id = str(uuid.uuid4()) if session.get('subscription') else None
+            
             payment_data = {
-                "id": str(uuid.uuid4()),  # Use UUID for payment ID
+                "id": payment_id,  # Use UUID for payment ID
                 "user_id": user_id,
                 "amount": amount,
                 "status": "completed",
@@ -261,28 +265,54 @@ class StripeService:
                 "created_at": datetime.now().isoformat(),
             }
             
-            # Store Stripe subscription ID in transaction_id field
+            # Store Stripe subscription ID
             if session.get('subscription'):
                 stripe_subscription_id = session.get('subscription')
                 payment_data["stripe_subscription_id"] = stripe_subscription_id
-                logger.info(f"Associated with subscription: {stripe_subscription_id}")
+                
+                # Don't link with subscription initially - we'll update it after the subscription is created
+                logger.info(f"Associated payment with stripe subscription: {stripe_subscription_id}, will link to database ID later")
+                
+                # Store customer info in stripe_customers table
+                if session.get('customer'):
+                    customer_id = session.get('customer')
+                    try:
+                        # Check if we already have this customer
+                        customer_check = supabase.table("stripe_customers").select("id").eq("customer_id", customer_id).execute()
+                        
+                        if not customer_check.data:
+                            # Create a new customer record
+                            customer_data = {
+                                "id": str(uuid.uuid4()),
+                                "user_id": user_id,
+                                "customer_id": customer_id,
+                                "created_at": datetime.now().isoformat()
+                            }
+                            
+                            # First check if table exists by trying a select
+                            try:
+                                supabase.table("stripe_customers").select("id").limit(1).execute()
+                                # If it didn't throw an error, insert the data
+                                customer_result = supabase.table("stripe_customers").insert(customer_data).execute()
+                                logger.info(f"Created customer record: {customer_result.data}")
+                            except Exception as e:
+                                logger.warning(f"Could not access stripe_customers table (may not exist yet): {str(e)}")
+                    except Exception as e:
+                        logger.error(f"Error creating customer record: {str(e)}")
             
             logger.info(f"Creating payment record: {payment_data}")
             
-            # Insert payment record, omitting subscription_id since it's not a valid UUID
-            # The payment contains the subscription ID as a string in stripe_subscription_id
-            cleaned_payment_data = {k: v for k, v in payment_data.items() if k != "subscription_id"}
-            payment_result = supabase.table("payments").insert(cleaned_payment_data).execute()
+            # Insert payment record with all fields
+            payment_result = supabase.table("payments").insert(payment_data).execute()
             logger.info(f"Payment record created: {payment_result.data}")
             
             # For subscription mode, also create a subscription record if it doesn't exist already
             # This is a backup in case the subscription.created webhook fails
             if session.get('mode') == 'subscription' and session.get('subscription'):
                 stripe_subscription_id = session.get('subscription')
-                subscription_id = str(uuid.uuid4())  # Always use a UUID
                 
-                # Check if subscription already exists by stripe ID
-                sub_check = supabase.table("subscriptions").select("id").eq("stripe_id", stripe_subscription_id).execute()
+                # Check if subscription already exists for this user
+                sub_check = supabase.table("subscriptions").select("id").eq("user_id", user_id).eq("status", "active").execute()
                 
                 if not sub_check.data:
                     logger.info(f"Creating backup subscription record for {stripe_subscription_id}, user_id={user_id}")
@@ -297,7 +327,8 @@ class StripeService:
                         "status": "active",
                         "start_date": start_date.isoformat(),
                         "end_date": end_date.isoformat(),
-                        "created_at": start_date.isoformat()
+                        "created_at": start_date.isoformat(),
+                        "stripe_id": stripe_subscription_id  # Add the Stripe subscription ID
                     }
                     
                     logger.info(f"Preparing to insert backup subscription data: {subscription_data}")
@@ -306,6 +337,17 @@ class StripeService:
                         # Insert subscription record
                         sub_result = supabase.table("subscriptions").insert(subscription_data).execute()
                         logger.info(f"Backup subscription record created: {sub_result.data}")
+                        
+                        # Now try to update any payment records that reference this subscription
+                        if sub_result.data and stripe_subscription_id:
+                            try:
+                                payment_update = {
+                                    "subscription_id": subscription_id
+                                }
+                                update_result = supabase.table("payments").update(payment_update).eq("stripe_subscription_id", stripe_subscription_id).execute()
+                                logger.info(f"Updated payment records for subscription: {update_result.data}")
+                            except Exception as payment_update_error:
+                                logger.error(f"Error updating payment records: {str(payment_update_error)}")
                     except Exception as sub_error:
                         logger.error(f"Error creating backup subscription record: {str(sub_error)}")
             
@@ -390,7 +432,8 @@ class StripeService:
                 "status": "active",
                 "start_date": start_date_iso,
                 "end_date": end_date_iso,
-                "created_at": datetime.now().isoformat()
+                "created_at": datetime.now().isoformat(),
+                "stripe_id": subscription_id  # Add the Stripe subscription ID
             }
             
             logger.info(f"Creating subscription record: {subscription_data}")
@@ -464,6 +507,41 @@ class StripeService:
                                 
                             logger.info(f"Updating subscriptions for user {user_id} with data: {update_data}")
                             response = supabase.table("subscriptions").update(update_data).eq("user_id", user_id).eq("status", "active").execute()
+                            
+                            if response.data:
+                                logger.info(f"Updated subscriptions for user {user_id}: {response.data}")
+                            else:
+                                logger.warning(f"No active subscriptions found to update for user {user_id}")
+                                
+                                # If the subscription doesn't exist yet, create it
+                                if db_status == "active":
+                                    try:
+                                        import uuid
+                                        from datetime import datetime, timedelta
+                                        
+                                        # Generate UUID for subscription
+                                        db_sub_id = str(uuid.uuid4())
+                                        
+                                        # Get subscription details for timing
+                                        start_date = datetime.now()
+                                        end_date_ts = subscription.get('current_period_end')
+                                        end_date_obj = datetime.fromtimestamp(end_date_ts) if end_date_ts else start_date + timedelta(days=30)
+                                        
+                                        # Create subscription
+                                        sub_data = {
+                                            "id": db_sub_id,
+                                            "user_id": user_id,
+                                            "status": "active",
+                                            "start_date": start_date.isoformat(),
+                                            "end_date": end_date_obj.isoformat(),
+                                            "created_at": start_date.isoformat(),
+                                            "stripe_id": subscription_id
+                                        }
+                                        
+                                        sub_result = supabase.table("subscriptions").insert(sub_data).execute()
+                                        logger.info(f"Created new subscription for user {user_id}: {sub_result.data}")
+                                    except Exception as e:
+                                        logger.error(f"Error creating new subscription: {str(e)}")
                             return
                 except Exception as e:
                     logger.error(f"Error getting user_id from customer: {str(e)}")
@@ -575,17 +653,48 @@ class StripeService:
             from datetime import datetime
             
             # Create payment record
+            # Create a UUID for our payment
+            import uuid
+            payment_uuid = str(uuid.uuid4())
+            
+            # If user_id is not a valid UUID, find or create a proper user ID
+            if user_id.startswith("customer_") or user_id == "unknown":
+                # Try to find the proper user ID from the customer ID
+                customer_id = subscription.get('customer')
+                if customer_id:
+                    try:
+                        customer_response = supabase.table("stripe_customers").select("user_id").eq("customer_id", customer_id).execute()
+                        if customer_response.data and len(customer_response.data) > 0:
+                            user_id = customer_response.data[0].get('user_id')
+                            logger.info(f"Found proper user_id from customer: {user_id}")
+                    except Exception as e:
+                        logger.error(f"Error getting user ID from customer: {str(e)}")
+                        
+                # If we still can't find a valid user ID, we should skip payment creation
+                if user_id.startswith("customer_") or user_id == "unknown":
+                    logger.warning(f"Cannot create payment with invalid user ID: {user_id}")
+                    return
+            
             payment_data = {
+                "id": payment_uuid,
                 "user_id": user_id,
                 "amount": amount_paid,
                 "status": "completed",
                 "transaction_id": invoice_id,
-                "created_at": datetime.now().isoformat()
+                "created_at": datetime.now().isoformat(),
+                "stripe_subscription_id": subscription_id  # Store the Stripe subscription ID
             }
             
-            # Add subscription ID if available
-            if subscription_id:
-                payment_data["subscription_id"] = subscription_id
+            # For the subscription_id field, we need a UUID, not the Stripe ID
+            # Try to find the corresponding subscription
+            try:
+                sub_check = supabase.table("subscriptions").select("id").eq("stripe_id", subscription_id).execute()
+                if sub_check.data and len(sub_check.data) > 0:
+                    # If we found a subscription with this stripe_id, link to it
+                    payment_data["subscription_id"] = sub_check.data[0].get("id")
+                    logger.info(f"Linked payment to subscription ID: {payment_data['subscription_id']}")
+            except Exception as e:
+                logger.error(f"Error finding subscription by stripe_id: {str(e)}")
                 
             logger.info(f"Creating payment record for successful invoice: {payment_data}")
             payment_result = supabase.table("payments").insert(payment_data).execute()
@@ -616,17 +725,29 @@ class StripeService:
                                 start_date = datetime.now().isoformat()
                                 end_date = datetime.fromtimestamp(current_period_end).isoformat() if current_period_end else (datetime.now() + timedelta(days=30)).isoformat()
                                 
+                                # Generate a proper UUID for the subscription
+                                import uuid
+                                db_subscription_id = str(uuid.uuid4())
+                                
                                 subscription_data = {
-                                    "id": subscription_id,
+                                    "id": db_subscription_id,  # Use UUID as ID
                                     "user_id": user_id,
                                     "status": "active", 
                                     "start_date": start_date,
                                     "end_date": end_date,
-                                    "created_at": start_date
+                                    "created_at": start_date,
+                                    "stripe_id": stripe_sub.id  # Add the Stripe subscription ID
                                 }
                                 
                                 sub_result = supabase.table("subscriptions").insert(subscription_data).execute()
                                 logger.info(f"Backup subscription created from invoice: {sub_result.data}")
+                                
+                                # Update the payment to link to this subscription
+                                try:
+                                    payment_update = supabase.table("payments").update({"subscription_id": db_subscription_id}).eq("stripe_subscription_id", stripe_sub.id).execute()
+                                    logger.info(f"Updated payment to link to subscription: {payment_update.data}")
+                                except Exception as e:
+                                    logger.error(f"Error linking payment to subscription: {str(e)}")
                                 
                             except Exception as e:
                                 logger.error(f"Error creating backup subscription from invoice: {str(e)}")
@@ -686,7 +807,11 @@ class StripeService:
             from datetime import datetime
             
             # Create payment record for the failed payment
+            import uuid
+            payment_id = str(uuid.uuid4())
+            
             payment_data = {
+                "id": payment_id,
                 "user_id": user_id,
                 "amount": amount,
                 "status": "failed",
@@ -694,9 +819,18 @@ class StripeService:
                 "created_at": datetime.now().isoformat()
             }
             
-            # Add subscription ID if available
+            # Add Stripe subscription ID if available
             if subscription_id:
-                payment_data["subscription_id"] = subscription_id
+                payment_data["stripe_subscription_id"] = subscription_id
+                
+                # Try to find a matching subscription in our database by stripe_id
+                try:
+                    sub_check = supabase.table("subscriptions").select("id").eq("stripe_id", subscription_id).execute()
+                    if sub_check.data and len(sub_check.data) > 0:
+                        # If we found a subscription with this stripe_id, link to it
+                        payment_data["subscription_id"] = sub_check.data[0].get("id")
+                except Exception as e:
+                    logger.error(f"Error finding subscription by stripe_id: {str(e)}")
                 
             logger.info(f"Creating payment record for failed invoice: {payment_data}")
             payment_result = supabase.table("payments").insert(payment_data).execute()
