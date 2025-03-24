@@ -9,6 +9,7 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 from pathlib import Path
 import re
+import time
 
 # Load environment variables from .env file
 load_dotenv()
@@ -1070,7 +1071,13 @@ async def generate_highlight_explanation(
     # Similar implementation to generate_highlight_summary
     # But with different prompt and parameters
     try:
-        logger.info(f"Generating explanation for highlighted text: {highlighted_text[:50]}...")
+        text_preview = highlighted_text[:50].replace('\n', ' ')
+        logger.info(f"[LLM-EXPLAIN] Starting explanation generation for text: '{text_preview}...'")
+        logger.debug(f"[LLM-EXPLAIN] Parameters: max_tokens={max_tokens}, paper_title='{paper_title or 'None'}'")
+        logger.debug(f"[LLM-EXPLAIN] Full highlighted text ({len(highlighted_text)} chars): {highlighted_text}")
+        
+        if context:
+            logger.debug(f"[LLM-EXPLAIN] Context provided ({len(context)} chars): {context[:100]}...")
         
         # Format the context if available
         paper_context = f" from the paper '{paper_title}'" if paper_title else ""
@@ -1086,17 +1093,97 @@ Highlighted Text:
 Provide a detailed explanation of this highlighted text, making it clear and understandable.
 You may use markdown formatting to improve readability. Aim for 3-6 sentences that thoroughly explain the concept.
 """
-
+        
+        logger.debug(f"[LLM-EXPLAIN] Generated prompt ({len(prompt)} chars)")
+        start_time = time.time()
+        
         # Generate the explanation with a slightly higher temperature for more creative explanations
+        logger.info(f"[LLM-EXPLAIN] Calling LLM with temperature=0.3, max_tokens={max_tokens}")
         explanation = await generate_text(prompt, max_tokens=max_tokens, temperature=0.3)
         
-        return {
+        end_time = time.time()
+        processing_time = round(end_time - start_time, 2)
+        logger.info(f"[LLM-EXPLAIN] Received explanation ({len(explanation)} chars) in {processing_time}s")
+        logger.debug(f"[LLM-EXPLAIN] Explanation preview: {explanation[:100]}...")
+        
+        response = {
             "response": explanation,
             "sources": []  # No sources used for explanations
         }
+        
+        return response
     except Exception as e:
         error_msg = f"Error generating highlight explanation: {str(e)}"
-        logger.error(error_msg)
+        logger.error(f"[LLM-EXPLAIN] {error_msg}", exc_info=True)
+        # Log the text that caused the error (truncated to avoid huge logs)
+        logger.error(f"[LLM-EXPLAIN] Failed text preview: '{highlighted_text[:100]}...'")
+        raise LLMServiceError(error_msg)
+
+async def generate_highlight_summary(
+    highlighted_text: str,
+    context: Optional[str] = None,
+    paper_title: Optional[str] = None,
+    max_tokens: int = 500
+) -> Dict[str, Any]:
+    """
+    Generate a concise summary of the highlighted text.
+    
+    Args:
+        highlighted_text: The text highlighted by the user
+        context: Optional additional context around the highlighted text
+        paper_title: Optional title of the paper for context
+        max_tokens: Maximum tokens to generate
+        
+    Returns:
+        Dictionary with generated summary and sources
+    """
+    try:
+        text_preview = highlighted_text[:50].replace('\n', ' ')
+        logger.info(f"[LLM-SUMMARY] Starting summary generation for text: '{text_preview}...'")
+        logger.debug(f"[LLM-SUMMARY] Parameters: max_tokens={max_tokens}, paper_title='{paper_title or 'None'}'")
+        logger.debug(f"[LLM-SUMMARY] Full highlighted text ({len(highlighted_text)} chars): {highlighted_text}")
+        
+        if context:
+            logger.debug(f"[LLM-SUMMARY] Context provided ({len(context)} chars): {context[:100]}...")
+        
+        # Format the context if available
+        paper_context = f" from the paper '{paper_title}'" if paper_title else ""
+        surrounding_context = f"\n\nSurrounding Context:\n{context}" if context else ""
+        
+        prompt = f"""You are an AI research assistant. Summarize the following highlighted text{paper_context}.
+Create a concise summary that captures the main points and key information.
+
+Highlighted Text:
+{highlighted_text}{surrounding_context}
+
+Provide a clear, concise summary of this highlighted text.
+You may use markdown formatting to improve readability. Aim for 2-4 sentences that effectively summarize the content.
+Focus on the most important information and maintain the original meaning.
+"""
+
+        logger.debug(f"[LLM-SUMMARY] Generated prompt ({len(prompt)} chars)")
+        start_time = time.time()
+        
+        # Generate the summary with a lower temperature for more focused summaries
+        logger.info(f"[LLM-SUMMARY] Calling LLM with temperature=0.2, max_tokens={max_tokens}")
+        summary = await generate_text(prompt, max_tokens=max_tokens, temperature=0.2)
+        
+        end_time = time.time()
+        processing_time = round(end_time - start_time, 2)
+        logger.info(f"[LLM-SUMMARY] Received summary ({len(summary)} chars) in {processing_time}s")
+        logger.debug(f"[LLM-SUMMARY] Summary preview: {summary[:100]}...")
+        
+        response = {
+            "response": summary,
+            "sources": []  # No sources used for summaries
+        }
+        
+        return response
+    except Exception as e:
+        error_msg = f"Error generating highlight summary: {str(e)}"
+        logger.error(f"[LLM-SUMMARY] {error_msg}", exc_info=True)
+        # Log the text that caused the error (truncated to avoid huge logs)
+        logger.error(f"[LLM-SUMMARY] Failed text preview: '{highlighted_text[:100]}...'")
         raise LLMServiceError(error_msg)
 
 async def generate_targeted_quiz_questions(

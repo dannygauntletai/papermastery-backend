@@ -18,6 +18,17 @@ except Exception as e:
     raise SupabaseError(f"Failed to initialize Supabase client: {str(e)}")
 
 
+async def get_supabase_client() -> Client:
+    """
+    Get the Supabase client. This function exists to maintain consistency 
+    with other functions that might need an async client in the future.
+    
+    Returns:
+        The initialized Supabase client
+    """
+    return supabase
+
+
 async def get_paper_by_id(paper_id: str) -> Optional[Dict[str, Any]]:
     """
     Retrieve a paper from the Supabase database by its ID.
@@ -27,20 +38,21 @@ async def get_paper_by_id(paper_id: str) -> Optional[Dict[str, Any]]:
         
     Returns:
         The paper data as a dictionary, or None if not found
-        
-    Raises:
-        SupabaseError: If there's an error retrieving the paper
     """
     try:
-        response = supabase.table("papers").select("*").eq("id", paper_id).execute()
+        client = await get_supabase_client()
+        response = (
+            client.table("papers")
+            .select("*")
+            .eq("id", paper_id)
+            .execute()
+        )
         
-        if not response.data:
-            return None
-            
-        return response.data[0]
+        data = response.data
+        return data[0] if data else None
     except Exception as e:
         logger.error(f"Error retrieving paper with ID {paper_id}: {str(e)}")
-        raise SupabaseError(f"Error retrieving paper with ID {paper_id}: {str(e)}")
+        return None
 
 
 async def get_paper_by_arxiv_id(arxiv_id: str) -> Optional[Dict[str, Any]]:
@@ -574,27 +586,54 @@ async def create_subscription(subscription_data: Dict[str, Any]) -> Dict[str, An
 
 async def get_subscription_by_id(subscription_id: UUID) -> Optional[Dict[str, Any]]:
     """
-    Retrieve a subscription by ID.
+    Get a subscription by ID.
     
     Args:
-        subscription_id: The UUID of the subscription
+        subscription_id: UUID of the subscription
         
     Returns:
-        The subscription data or None if not found
-        
-    Raises:
-        SupabaseError: If there's an error retrieving the subscription
+        Subscription data or None if not found
     """
     try:
-        response = supabase.table("subscriptions").select("*").eq("id", str(subscription_id)).execute()
+        client = await get_supabase_client()
+        response = (
+            client.table("subscriptions")
+            .select("*")
+            .eq("id", str(subscription_id))
+            .execute()
+        )
         
-        if not response.data:
-            return None
-            
-        return response.data[0]
+        data = response.data
+        return data[0] if data else None
     except Exception as e:
-        logger.error(f"Error retrieving subscription with ID {subscription_id}: {str(e)}")
-        raise SupabaseError(f"Error retrieving subscription with ID {subscription_id}: {str(e)}")
+        logger.error(f"Error getting subscription by ID {subscription_id}: {str(e)}")
+        return None
+
+
+async def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Get a user by ID.
+    
+    Args:
+        user_id: ID of the user
+        
+    Returns:
+        User data or None if not found
+    """
+    try:
+        client = await get_supabase_client()
+        response = (
+            client.table("users")
+            .select("*")
+            .eq("id", user_id)
+            .execute()
+        )
+        
+        data = response.data
+        return data[0] if data else None
+    except Exception as e:
+        logger.error(f"Error getting user by ID {user_id}: {str(e)}")
+        return None
 
 
 async def get_user_subscription(user_id: str) -> Optional[Dict[str, Any]]:
@@ -942,6 +981,32 @@ async def get_payments_by_user(user_id: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Error retrieving payments for user {user_id}: {str(e)}")
         raise SupabaseError(f"Error retrieving payments for user {user_id}: {str(e)}")
+
+
+async def get_payment_by_transaction_id(transaction_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve a payment by its transaction ID (e.g., Stripe payment intent ID).
+    
+    Args:
+        transaction_id: The external transaction ID
+        
+    Returns:
+        The payment data or None if not found
+    """
+    try:
+        client = await get_supabase_client()
+        response = (
+            client.table("payments")
+            .select("*")
+            .eq("transaction_id", transaction_id)
+            .execute()
+        )
+        
+        data = response.data
+        return data[0] if data else None
+    except Exception as e:
+        logger.error(f"Error retrieving payment with transaction ID {transaction_id}: {str(e)}")
+        return None
 
 
 async def update_payment(payment_id: UUID, update_data: Dict[str, Any]) -> Dict[str, Any]:

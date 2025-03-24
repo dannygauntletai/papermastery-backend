@@ -81,6 +81,16 @@ class PaperSummary(BaseModel):
     intermediate: str
     advanced: str
     
+class HighlightRequest(BaseModel):
+    """Request model for paper highlight operations."""
+    text: str
+    context: Optional[str] = None
+    
+class HighlightResponse(BaseModel):
+    """Response model for highlight operations."""
+    response: str
+    sources: List[Dict[str, Any]] = []
+
 class PaperBase(BaseModel):
     """Base model for paper attributes."""
     # Paper identifiers - at least one should be provided if available

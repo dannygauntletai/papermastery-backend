@@ -22,6 +22,9 @@ import inspect
 from typing import Callable, Dict, Any, List, Optional
 import time
 
+# Add imports for new auth and webhooks routers
+from app.api.v1.endpoints import auth, webhooks
+
 settings = get_settings()
 logger = get_logger(__name__)
 
@@ -80,7 +83,7 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For development; restrict in production
+    allow_origins=["http://localhost:8080", "http://127.0.0.1:8080", "*"],  # For development; restrict in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -130,12 +133,19 @@ async def health_check():
     }
 
 
-# Include routers for all endpoints
+# Validate environment variables
+validate_environment()
+
+# Include routers
 app.include_router(papers.router, prefix=f"{settings.API_V1_STR}")
 app.include_router(chat.router, prefix=f"{settings.API_V1_STR}")
 app.include_router(learning.router, prefix=f"{settings.API_V1_STR}")
 app.include_router(waiting_list.router, prefix=f"{settings.API_V1_STR}")
 app.include_router(consulting.router, prefix=f"{settings.API_V1_STR}")
+
+# Include new routers
+app.include_router(auth.router, prefix=f"{settings.API_V1_STR}")
+app.include_router(webhooks.router, prefix=f"{settings.API_V1_STR}")
 
 # Custom OpenAPI schema to properly document the API
 def custom_openapi():
