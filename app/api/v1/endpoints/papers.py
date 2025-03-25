@@ -6,6 +6,7 @@ import json
 import hashlib
 from datetime import datetime
 import logging
+from pydantic import BaseModel, HttpUrl, validator
 
 from app.api.v1.models import PaperSubmission, PaperResponse, PaperSummary, SourceType, PaperSubmitResponse, HighlightRequest, HighlightResponse
 from app.core.logger import get_logger
@@ -14,7 +15,13 @@ from app.services.paper_service import (
     get_related_papers,
     extract_metadata_from_text
 )
-from app.services.pdf_service import download_and_process_paper, download_pdf, read_pdf_file_to_bytes, extract_text_from_pdf_bytes
+from app.services.pdf_service import (
+    download_and_process_paper, 
+    download_pdf, 
+    read_pdf_file_to_bytes, 
+    extract_text_from_pdf_bytes,
+    proxy_pdf_from_url
+)
 from app.services.url_service import detect_url_type, fetch_metadata_from_url
 from app.utils.url_utils import extract_paper_id_from_url
 from app.database.supabase_client import (
@@ -26,7 +33,8 @@ from app.database.supabase_client import (
     add_paper_to_user,
     create_conversation,
     get_user_paper_conversations,
-    insert_message
+    insert_message,
+    get_paper_by_arxiv_id
 )
 from app.services.storage_service import upload_file_to_storage, get_file_url
 from app.dependencies import validate_environment, get_current_user
@@ -42,6 +50,76 @@ router = APIRouter(
     responses={404: {"description": "Paper not found"}},
 )
 
+
+@router.get("/pdf-url", response_model=Dict[str, str])
+async def get_pdf_url(
+    arxiv_id: str = Query(..., description="The arXiv ID of the paper"),
+):
+    """
+    Get the PDF URL for a paper by its arXiv ID.
+    
+    This endpoint returns the filename of the PDF in Supabase storage,
+    which can be used with the @supabase-storage directive in the frontend.
+    
+    Args:
+        arxiv_id: The arXiv ID of the paper
+        
+    Returns:
+        A dictionary with the URL of the PDF
+        
+    Raises:
+        HTTPException: If the paper is not found
+    """
+    # Force log output to console for debugging
+    print("[ARXIV ERROR] CONSOLE LOG: Fetching PDF URL request received for arXiv ID:", arxiv_id)
+    
+    logger.info(f"[ARXIV ERROR] Fetching PDF URL request received for arXiv ID: {arxiv_id}")
+    
+    try:
+        # Get the paper from the database
+        logger.debug(f"[ARXIV ERROR] Calling get_paper_by_arxiv_id with arXiv ID: {arxiv_id}")
+        paper = await get_paper_by_arxiv_id(arxiv_id)
+        
+        logger.info(f"[ARXIV ERROR] Database response for arXiv ID {arxiv_id}: {paper is not None}")
+        
+        if not paper:
+            logger.warning(f"[ARXIV ERROR] Paper with arXiv ID {arxiv_id} not found in database")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Paper with arXiv ID {arxiv_id} not found"
+            )
+        
+        # Extract the filename from the source URL
+        source_url = paper.get("source_url")
+        logger.debug(f"[ARXIV ERROR] Source URL from database: {source_url}")
+        
+        if not source_url:
+            logger.warning(f"[ARXIV ERROR] Paper with arXiv ID {arxiv_id} doesn't have a source URL")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Paper with arXiv ID {arxiv_id} doesn't have a source URL"
+            )
+        
+        # Extract the filename from the URL
+        from urllib.parse import urlparse
+        parsed_url = urlparse(source_url)
+        path_parts = parsed_url.path.split('/')
+        filename = path_parts[-1] if path_parts[-1] else f"{arxiv_id}.pdf"
+        
+        logger.info(f"[ARXIV ERROR] Extracted filename for arXiv ID {arxiv_id}: {filename}")
+        
+        # Log the final response
+        response = {"url": filename}
+        logger.info(f"[ARXIV ERROR] Returning response for arXiv ID {arxiv_id}: {response}")
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"[ARXIV ERROR] Unexpected error for arXiv ID {arxiv_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching PDF URL: {str(e)}"
+        )
 
 @router.post("/submit", response_model=PaperSubmitResponse, status_code=status.HTTP_202_ACCEPTED)
 async def submit_paper(
@@ -1216,4 +1294,67 @@ async def explain_highlighted_text_alias(
     # Ensure current_user is properly formatted as a dictionary if it's a string
     current_user_dict = {"id": current_user} if isinstance(current_user, str) else current_user
     # Call the original implementation
-    return await explain_highlighted_text(paper_id, highlight_request, current_user_dict) 
+    return await explain_highlighted_text(paper_id, highlight_request, current_user_dict)
+
+class ProxyPdfRequest(BaseModel):
+    url: str
+    paper_id: Optional[str] = None
+
+    @validator('url')
+    def validate_url(cls, v):
+        if not v:
+            raise ValueError('URL is required')
+        # A simple URL validation to check if it starts with http:// or https://
+        if not v.startswith(('http://', 'https://')):
+            raise ValueError('URL must start with http:// or https://')
+        return v
+
+@router.post("/proxy-pdf", response_model=Dict[str, str])
+async def proxy_pdf(
+    request: ProxyPdfRequest
+):
+    """
+    Proxy a PDF from an external source.
+    
+    This endpoint downloads a PDF from an external URL and serves it from the same domain,
+    avoiding CORS issues when loading PDFs in the browser.
+    
+    Args:
+        request: Request object containing the URL and optional paper ID
+        
+    Returns:
+        Dictionary containing the URL of the proxied PDF
+        
+    Raises:
+        HTTPException: If there's an error downloading or processing the PDF
+    """
+    try:
+        logger.info(f"Received proxy PDF request for URL: {request.url}")
+        
+        # Call the proxy_pdf_from_url function
+        result = await proxy_pdf_from_url(
+            url=request.url,
+            paper_id=request.paper_id
+        )
+        
+        logger.info(f"Successfully proxied PDF: {result}")
+        return result
+        
+    except InvalidPDFUrlError as e:
+        logger.error(f"Invalid PDF URL: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except PDFDownloadError as e:
+        logger.error(f"Error downloading PDF: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error proxying PDF: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error proxying PDF: {str(e)}"
+        ) 

@@ -626,7 +626,9 @@ This research provides empirical validation for the architectural advantages of 
 async def generate_summary_json(
     prompt: str,
     max_tokens: int = 2500,
-    temperature: float = 0.3
+    temperature: float = 0.3,
+    max_retries: int = 3,
+    base_retry_delay: float = 1.0
 ) -> Dict[str, str]:
     """
     Generate a JSON response containing paper summaries and extracted abstract using a Large Language Model.
@@ -635,69 +637,98 @@ async def generate_summary_json(
         prompt: The prompt to generate summaries and extract abstract
         max_tokens: Maximum tokens to generate
         temperature: Controls randomness (0.0-1.0)
+        max_retries: Maximum number of retry attempts for handling JSON parsing failures
+        base_retry_delay: Base delay in seconds between retries (will be multiplied by 2^attempt)
         
     Returns:
         Dictionary containing the extracted abstract and generated summaries (beginner, intermediate, advanced)
         
     Raises:
-        LLMServiceError: If an error occurs while generating or parsing the JSON
+        LLMServiceError: If an error occurs while generating or parsing the JSON after all retries
     """
-    try:
-        logger.info("Generating paper summaries and extracting abstract in JSON format")
-        
-        # Generate the text response
-        response_text = await generate_text(prompt, max_tokens, temperature)
-        
-        # Extract JSON from the response
-        # First, try to parse the entire response as JSON
+    
+    last_exception = None
+    
+    for attempt in range(max_retries + 1):  # +1 to include the initial attempt
         try:
-            result = json.loads(response_text)
-            logger.info("Successfully parsed JSON response")
-        except json.JSONDecodeError:
-            # If that fails, try to extract JSON from markdown code blocks
-            logger.warning("Failed to parse entire response as JSON, trying to extract JSON from code blocks")
-            json_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', response_text)
-            
-            if json_match:
-                try:
-                    result = json.loads(json_match.group(1))
-                    logger.info("Successfully extracted and parsed JSON from code block")
-                except json.JSONDecodeError:
-                    raise LLMServiceError("Failed to parse extracted JSON from code block")
+            if attempt > 0:
+                # Adjust the prompt to emphasize JSON formatting for retry attempts
+                enhanced_prompt = prompt + "\n\nIMPORTANT: Your response MUST be valid JSON following this exact structure:" + \
+                    "\n```json\n{\n  \"beginner\": \"summary text for beginners\",\n  \"intermediate\": \"summary text for intermediate readers\",\n  \"advanced\": \"summary text for advanced readers\",\n  \"extracted_abstract\": \"extracted abstract text\"\n}\n```"
+                
+                # Adjust temperature to be more deterministic on retries
+                adjusted_temperature = max(0.1, temperature - (0.1 * attempt))
+                
+                # Log the retry attempt
+                logger.info(f"Retry attempt {attempt}/{max_retries} for summary generation with temperature {adjusted_temperature}")
+                
+                # Generate the text response with adjusted parameters
+                response_text = await generate_text(enhanced_prompt, max_tokens, adjusted_temperature)
             else:
-                # Last resort: try to find anything that looks like a JSON object
-                logger.warning("No code blocks found, trying to extract JSON object directly")
-                json_match = re.search(r'{[\s\S]*?}', response_text)
+                logger.info("Generating paper summaries and extracting abstract in JSON format")
+                response_text = await generate_text(prompt, max_tokens, temperature)
+            
+            # Extract JSON from the response
+            # First, try to parse the entire response as JSON
+            try:
+                result = json.loads(response_text)
+                logger.info("Successfully parsed JSON response")
+            except json.JSONDecodeError:
+                # If that fails, try to extract JSON from markdown code blocks
+                logger.warning("Failed to parse entire response as JSON, trying to extract JSON from code blocks")
+                json_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', response_text)
                 
                 if json_match:
                     try:
-                        result = json.loads(json_match.group(0))
-                        logger.info("Successfully extracted and parsed JSON object")
+                        result = json.loads(json_match.group(1))
+                        logger.info("Successfully extracted and parsed JSON from code block")
                     except json.JSONDecodeError:
-                        raise LLMServiceError("Failed to parse extracted JSON object")
+                        raise LLMServiceError("Failed to parse extracted JSON from code block")
                 else:
-                    raise LLMServiceError("No JSON found in the response")
-        
-        # Validate that the required keys are present
-        required_keys = ["beginner", "intermediate", "advanced", "extracted_abstract"]
-        missing_keys = [key for key in required_keys if key not in result]
-        
-        if missing_keys:
-            logger.error(f"Missing required keys in JSON response: {missing_keys}")
+                    # Last resort: try to find anything that looks like a JSON object
+                    logger.warning("No code blocks found, trying to extract JSON object directly")
+                    json_match = re.search(r'{[\s\S]*?}', response_text)
+                    
+                    if json_match:
+                        try:
+                            result = json.loads(json_match.group(0))
+                            logger.info("Successfully extracted and parsed JSON object")
+                        except json.JSONDecodeError:
+                            raise LLMServiceError("Failed to parse extracted JSON object")
+                    else:
+                        raise LLMServiceError("No JSON found in the response")
             
-            # If only missing extracted_abstract, add a placeholder
-            if missing_keys == ["extracted_abstract"]:
-                logger.warning("Adding placeholder for missing extracted_abstract")
-                result["extracted_abstract"] = "Abstract extraction failed"
+            # Validate that the required keys are present
+            required_keys = ["beginner", "intermediate", "advanced", "extracted_abstract"]
+            missing_keys = [key for key in required_keys if key not in result]
+            
+            if missing_keys:
+                logger.error(f"Missing required keys in JSON response: {missing_keys}")
+                
+                # If only missing extracted_abstract, add a placeholder
+                if missing_keys == ["extracted_abstract"]:
+                    logger.warning("Adding placeholder for missing extracted_abstract")
+                    result["extracted_abstract"] = "Abstract extraction failed"
+                else:
+                    raise LLMServiceError(f"Missing required keys in JSON response: {missing_keys}")
+            
+            logger.info("Successfully generated and parsed summaries and abstract in JSON format")
+            return result
+            
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries:
+                # Calculate exponential backoff delay
+                delay = base_retry_delay * (2 ** attempt)
+                logger.warning(f"Attempt {attempt+1}/{max_retries} failed: {str(e)}. Retrying in {delay:.2f} seconds...")
+                await asyncio.sleep(delay)
             else:
-                raise LLMServiceError(f"Missing required keys in JSON response: {missing_keys}")
-        
-        logger.info("Successfully generated and parsed summaries and abstract in JSON format")
-        return result
-        
-    except Exception as e:
-        logger.error(f"Error generating summary JSON: {str(e)}")
-        raise LLMServiceError(f"Error generating summary JSON: {str(e)}")
+                logger.error(f"All {max_retries} retry attempts failed for summary generation")
+    
+    # If we've exhausted all retries
+    error_msg = f"Error generating summary JSON after {max_retries} retries: {str(last_exception)}"
+    logger.error(error_msg)
+    raise LLMServiceError(error_msg)
 
 async def mock_generate_summary_json(
     prompt: str,

@@ -21,7 +21,8 @@ async def generate_summaries(
     title: str,
     abstract: str,
     full_text: str,
-    extract_abstract: bool = False
+    extract_abstract: bool = False,
+    max_retries: int = 3
 ) -> Tuple[PaperSummary, str]:
     """
     Generate tiered summaries (beginner, intermediate, advanced) for a paper and optionally extract the abstract.
@@ -32,6 +33,7 @@ async def generate_summaries(
         abstract: The paper's abstract (can be None if extract_abstract is True)
         full_text: The full text of the paper
         extract_abstract: Whether to extract the abstract from the full text
+        max_retries: Maximum number of retry attempts for handling LLM failures
         
     Returns:
         Tuple containing:
@@ -67,7 +69,36 @@ async def generate_summaries(
         if APP_ENV == "testing":
             result_dict = await mock_generate_summary_json(prompt, max_tokens=2500, temperature=0.3)
         else:
-            result_dict = await generate_summary_json(prompt, max_tokens=2500, temperature=0.3)
+            # Pass the max_retries parameter to the generate_summary_json function
+            try:
+                result_dict = await generate_summary_json(
+                    prompt=prompt, 
+                    max_tokens=2500, 
+                    temperature=0.3,
+                    max_retries=max_retries
+                )
+            except Exception as llm_error:
+                logger.error(f"Error with LLM service during summary generation for paper ID {paper_id}: {str(llm_error)}")
+                # Try with a simplified prompt if the original fails
+                try:
+                    logger.info(f"Attempting summary generation with simplified prompt for paper ID {paper_id}")
+                    simplified_prompt = template.render(
+                        title=title,
+                        abstract=abstract,
+                        # Use only abstract for a simplified generation
+                        full_text=abstract, 
+                        block='content'
+                    ) + "\n\nPlease respond with ONLY valid JSON and nothing else."
+                    
+                    result_dict = await generate_summary_json(
+                        prompt=simplified_prompt, 
+                        max_tokens=1500,  # Reduce tokens for simplified summary
+                        temperature=0.2,  # Lower temperature for more deterministic output
+                        max_retries=max_retries
+                    )
+                except Exception as simplified_error:
+                    logger.error(f"Even simplified prompt failed for paper ID {paper_id}: {str(simplified_error)}")
+                    raise  # Re-raise to be caught by the outer try-except
         
         # Create PaperSummary object from the generated summaries
         summaries = PaperSummary(
@@ -88,14 +119,16 @@ async def generate_summaries(
     except Exception as e:
         logger.error(f"Error generating summaries for paper ID {paper_id}: {str(e)}")
         # Return basic summaries instead of raising error
-        # Use fallback template
-        fallback_template = env.get_template('prompts/unified_summary.j2')
-        fallback_content = fallback_template.render(
-            abstract=abstract,
-            block='fallback_content'  # Specify which block to use
-        )
         
+        # Use fallback template for a more graceful degradation
+        fallback_template = env.get_template('prompts/unified_summary.j2')
         try:
+            # Try to load pre-defined fallback content
+            fallback_content = fallback_template.render(
+                abstract=abstract,
+                block='fallback_content'  # Specify which block to use
+            )
+            
             # Try to parse the fallback content as JSON
             import json
             fallback_dict = json.loads(fallback_content)
@@ -105,13 +138,22 @@ async def generate_summaries(
                 advanced=fallback_dict["advanced"]
             )
             extracted_abstract = fallback_dict.get("extracted_abstract", abstract) if extract_abstract else abstract
-        except Exception:
-            # If parsing fails, use a simple fallback
+            
+            logger.info(f"Successfully used fallback template for paper ID: {paper_id}")
+        except Exception as fallback_error:
+            # If parsing fails, use a simple fallback with the abstract
+            logger.error(f"Fallback template failed for paper ID {paper_id}: {str(fallback_error)}")
+            
+            # Create simple summaries based on the abstract
+            abstract_preview = abstract[:100] + "..." if abstract and len(abstract) > 100 else (abstract or "Not available")
+            
             summaries = PaperSummary(
-                beginner=f"Summary generation in progress. Abstract: {abstract[:200] if abstract else 'Not available'}...",
-                intermediate=f"Summary generation in progress. Abstract: {abstract[:300] if abstract else 'Not available'}...",
-                advanced=f"Summary generation in progress. Abstract: {abstract if abstract else 'Not available'}"
+                beginner=f"This paper discusses: {abstract_preview}\n\nA detailed summary is being generated and will be available soon.",
+                intermediate=f"This academic paper covers: {abstract_preview}\n\nA comprehensive summary is being processed.",
+                advanced=f"Research paper abstract: {abstract or 'Not available'}\n\nA technical summary is in progress."
             )
             extracted_abstract = abstract
+            
+            logger.warning(f"Using very basic fallback summaries for paper ID: {paper_id}")
             
         return summaries, extracted_abstract 

@@ -227,21 +227,43 @@ async def list_papers(user_id: str) -> List[Dict[str, Any]]:
 async def add_paper_to_user(user_id: str, paper_id: str) -> None:
     """
     Associate a paper with a user in the users_papers table.
+    If the association already exists, this function will silently succeed.
     
     Args:
         user_id: The ID of the user
         paper_id: The ID of the paper
         
     Raises:
-        SupabaseError: If there's an error adding the association
+        SupabaseError: If there's an error adding the association (other than duplicate key)
     """
     try:
+        # First check if the user already has this paper
+        check_response = (
+            supabase.table("users_papers")
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("paper_id", paper_id)
+            .execute()
+        )
+        
+        # If the user already has the paper, no need to insert again
+        if check_response.data and len(check_response.data) > 0:
+            logger.info(f"User {user_id} already has access to paper {paper_id}")
+            return
+        
+        # If not, add the association
         response = supabase.table("users_papers").insert({
             "user_id": user_id,
             "paper_id": paper_id
         }).execute()
         logger.info(f"Added paper {paper_id} to user {user_id}")
     except Exception as e:
+        # Check if this is a duplicate key error
+        if "duplicate key" in str(e) or "already exists" in str(e):
+            logger.info(f"User {user_id} already has access to paper {paper_id} (caught duplicate key error)")
+            return
+        
+        # For other errors, raise as usual
         logger.error(f"Error adding paper {paper_id} to user {user_id}: {str(e)}")
         raise SupabaseError(f"Error adding paper {paper_id} to user {user_id}: {str(e)}")
 

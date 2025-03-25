@@ -21,6 +21,10 @@ logger = get_logger(__name__)
 PDF_CACHE_DIR = Path("./pdf_cache")
 PDF_CACHE_DIR.mkdir(exist_ok=True)
 
+# Create a directory for proxied PDFs
+PROXIED_PDF_DIR = Path("./static/proxied_pdfs")
+PROXIED_PDF_DIR.mkdir(parents=True, exist_ok=True)
+
 async def read_pdf_file_to_bytes(file_path: str) -> bytes:
     """
     Read a PDF file into bytes.
@@ -229,4 +233,88 @@ async def extract_text_from_pdf_bytes(file_content: bytes) -> str:
         
     except Exception as e:
         logger.error(f"Error extracting text from PDF bytes: {str(e)}")
-        raise PDFDownloadError(f"Error extracting text from PDF bytes: {str(e)}") 
+        raise PDFDownloadError(f"Error extracting text from PDF bytes: {str(e)}")
+
+async def proxy_pdf_from_url(url: str, paper_id: Optional[str] = None) -> Dict[str, str]:
+    """
+    Download a PDF from an external URL and store it locally for proxying.
+    
+    Args:
+        url: The URL to download the PDF from
+        paper_id: Optional ID of the paper to use in the filename
+        
+    Returns:
+        Dictionary containing the URL of the proxied PDF
+        
+    Raises:
+        PDFDownloadError: If there's an error downloading the PDF
+        InvalidPDFUrlError: If the URL doesn't point to a PDF
+    """
+    try:
+        logger.info(f"Proxying PDF from URL: {url}")
+        
+        # Validate URL
+        if not url:
+            raise InvalidPDFUrlError("URL is required")
+            
+        # Generate a unique filename for the PDF
+        if paper_id:
+            filename = f"{paper_id}.pdf"
+        else:
+            # Create a filename based on the URL hash
+            url_hash = hashlib.md5(url.encode()).hexdigest()
+            filename = f"{url_hash}.pdf"
+        
+        # Define path where the PDF will be stored
+        pdf_path = PROXIED_PDF_DIR / filename
+        
+        # Check if the file already exists
+        if pdf_path.exists():
+            logger.info(f"PDF already proxied: {filename}")
+            return {"url": f"/static/proxied_pdfs/{filename}"}
+        
+        # Download the PDF
+        logger.info(f"Downloading PDF from URL: {url}")
+        
+        # Convert arXiv abstract URLs to PDF URLs if needed
+        if url.startswith('https://arxiv.org/abs/'):
+            arxiv_id = url.split('https://arxiv.org/abs/')[1].split('v')[0].split('?')[0].strip()
+            url = f'https://arxiv.org/pdf/{arxiv_id}.pdf'
+            logger.info(f"Converted arXiv abstract URL to PDF URL: {url}")
+        
+        # Download the PDF
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url, 
+                follow_redirects=True, 
+                timeout=30.0,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                    "Accept": "application/pdf"
+                }
+            )
+            
+            if response.status_code != 200:
+                raise PDFDownloadError(f"Failed to download PDF: HTTP {response.status_code}")
+            
+            # Check content type
+            content_type = response.headers.get('content-type', '').lower()
+            if 'application/pdf' not in content_type and not url.endswith('.pdf') and '/storage/v1/object/public/' not in url:
+                raise InvalidPDFUrlError(f"URL does not point to a PDF: {url}")
+            
+            # Save the PDF
+            with open(pdf_path, 'wb') as f:
+                f.write(response.content)
+            
+            logger.info(f"Successfully proxied PDF to {pdf_path}")
+            return {"url": f"/static/proxied_pdfs/{filename}"}
+            
+    except PDFDownloadError as e:
+        logger.error(f"Error downloading PDF for proxying: {str(e)}")
+        raise
+    except InvalidPDFUrlError as e:
+        logger.error(f"Invalid PDF URL for proxying: {str(e)}")
+        raise
+    except Exception as e:
+        logger.error(f"Error proxying PDF from {url}: {str(e)}")
+        raise PDFDownloadError(f"Error proxying PDF: {str(e)}") 

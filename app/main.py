@@ -14,6 +14,7 @@ from fastapi import FastAPI, Depends, status, Query, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.routing import APIRoute
+from fastapi.staticfiles import StaticFiles
 from app.dependencies import validate_environment
 from app.api.v1.endpoints import chat, papers, learning, waiting_list, consulting
 from app.api import payments
@@ -22,6 +23,7 @@ from app.core.logger import get_logger
 import inspect
 from typing import Callable, Dict, Any, List, Optional
 import time
+from pathlib import Path
 
 # Add imports for new auth and webhooks routers
 from app.api.v1.endpoints import auth, webhooks
@@ -93,6 +95,16 @@ app.add_middleware(
 # Global start time for uptime tracking
 start_time = time.time()
 
+# Mount the static directory for serving proxied PDFs
+static_dir = Path("./static")
+if not static_dir.exists():
+    static_dir.mkdir(parents=True, exist_ok=True)
+
+proxied_pdfs_dir = Path("./static/proxied_pdfs")
+if not proxied_pdfs_dir.exists():
+    proxied_pdfs_dir.mkdir(parents=True, exist_ok=True)
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/", include_in_schema=False)
 async def root():
