@@ -28,6 +28,7 @@ except ValueError as e:
 class CheckoutRequest(BaseModel):
     """Request model for creating a Stripe checkout session."""
     productType: str
+    returnUrl: Optional[str] = None
 
 
 class SubscriptionStatusResponse(BaseModel):
@@ -41,7 +42,7 @@ async def create_checkout_session(request: CheckoutRequest, current_user: str = 
     Create a Stripe checkout session for subscription payment.
     
     Args:
-        request: The checkout request with product type
+        request: The checkout request with product type and optional returnUrl
         current_user: The authenticated user ID
         
     Returns:
@@ -57,9 +58,11 @@ async def create_checkout_session(request: CheckoutRequest, current_user: str = 
         # Base URL for redirects
         base_url = "http://localhost:8080"  # Match the frontend port
         
-        # Create success and cancel URLs
-        success_url = f"{base_url}/subscription/success"
+        # Use custom returnUrl if provided, otherwise use default success URL
+        success_url = request.returnUrl if request.returnUrl else f"{base_url}/subscription/success"
         cancel_url = f"{base_url}/subscription/cancel"
+        
+        logger.info(f"Creating checkout session with success_url: {success_url}")
         
         # Create checkout session
         checkout = stripe_service.create_checkout_session(
@@ -113,6 +116,47 @@ async def check_subscription_status(current_user: str = Depends(get_current_user
     except Exception as e:
         logger.error(f"Error checking subscription status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to check subscription status: {str(e)}")
+
+
+class CancelSubscriptionResponse(BaseModel):
+    """Response model for subscription cancellation."""
+    success: bool
+    message: str
+    end_date: Optional[str] = None
+
+
+@router.post("/cancel-subscription")
+async def cancel_subscription(current_user: str = Depends(get_current_user)) -> CancelSubscriptionResponse:
+    """
+    Cancel the current user's active subscription.
+    
+    Args:
+        current_user: The authenticated user ID
+        
+    Returns:
+        CancelSubscriptionResponse with cancellation status
+    """
+    # Check if stripe_service is available
+    if stripe_service is None:
+        error_message = "Stripe service is not available - missing required configuration"
+        logger.error(error_message)
+        raise HTTPException(status_code=500, detail=error_message)
+        
+    try:
+        result = stripe_service.cancel_subscription(current_user)
+        return CancelSubscriptionResponse(
+            success=result.get("success", False),
+            message=result.get("message", "Error processing cancellation"),
+            end_date=result.get("end_date")
+        )
+    except ValueError as e:
+        # Specific error for missing configuration or validation issues
+        error_message = f"Stripe configuration error: {str(e)}"
+        logger.error(error_message)
+        raise HTTPException(status_code=500, detail=error_message)
+    except Exception as e:
+        logger.error(f"Error cancelling subscription: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to cancel subscription: {str(e)}")
 
 
 @router.post("/webhook")
@@ -221,15 +265,36 @@ async def create_test_subscription(
         logger.info(f"Preparing to insert test subscription data: {subscription_data}")
         
         try:
+            # Check for existing test subscription for this user
+            existing_sub = supabase.table("subscriptions").select("id").eq("user_id", current_user).eq("status", "active").execute()
+            if existing_sub.data and len(existing_sub.data) > 0:
+                logger.info(f"User {current_user} already has an active subscription, id={existing_sub.data[0].get('id')}")
+                return {
+                    "status": "success", 
+                    "message": "User already has an active subscription",
+                    "existing_subscription": existing_sub.data[0]
+                }
+            
             # Insert subscription record
             result = supabase.table("subscriptions").insert(subscription_data).execute()
+            
+            # Check if we already have a test payment with this transaction ID
+            test_tx_id = f"test_tx_{request.sessionId[-8:]}"
+            existing_payment = supabase.table("payments").select("id").eq("transaction_id", test_tx_id).execute()
+            if existing_payment.data and len(existing_payment.data) > 0:
+                logger.info(f"Payment for test transaction {test_tx_id} already exists, skipping duplicate creation")
+                return {
+                    "status": "success", 
+                    "message": "Test subscription created (payment already exists)",
+                    "subscription": result.data[0],
+                }
             
             # Also create a payment record
             payment_data = {
                 "user_id": current_user,
-                "amount": 19.99,  # Standard price
+                "amount": 10.00,  # Standard price
                 "status": "completed",
-                "transaction_id": f"test_tx_{request.sessionId[-8:]}",
+                "transaction_id": test_tx_id,
                 "subscription_id": subscription_data["id"],  # Link to subscription
                 "stripe_subscription_id": f"sub_test_{request.sessionId[-8:]}",  # Add a fake stripe subscription ID
                 "created_at": start_date.isoformat()
@@ -260,7 +325,7 @@ async def create_test_subscription(
                 
                 payment_data = {
                     "user_id": current_user,
-                    "amount": 19.99,
+                    "amount": 10.00,
                     "status": "completed",
                     "transaction_id": f"test_tx_{request.sessionId[-8:]}",
                     "subscription_id": subscription_data["id"],

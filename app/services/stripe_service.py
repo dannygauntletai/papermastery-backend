@@ -79,6 +79,81 @@ class StripeService:
         else:
             raise ValueError(f"Unsupported product type: {product_type}")
     
+    def cancel_subscription(self, user_id: str) -> Dict[str, Any]:
+        """
+        Cancel a user's subscription.
+        
+        Args:
+            user_id: The ID of the user whose subscription to cancel
+            
+        Returns:
+            Dict with cancellation status and message
+        """
+        from app.database.supabase_client import supabase
+        
+        logger.info(f"Cancelling subscription for user {user_id}")
+        
+        try:
+            # First get the active subscription from our database
+            sub_response = supabase.table("subscriptions").select("*").eq("user_id", user_id).eq("status", "active").execute()
+            
+            if not sub_response.data or len(sub_response.data) == 0:
+                logger.warning(f"No active subscription found for user {user_id}")
+                return {"success": False, "message": "No active subscription found"}
+            
+            subscription = sub_response.data[0]
+            db_subscription_id = subscription.get('id')
+            stripe_subscription_id = subscription.get('stripe_id')
+            
+            if not stripe_subscription_id:
+                logger.warning(f"No Stripe subscription ID found for local subscription {db_subscription_id}")
+                
+                # Just mark it as canceled in our database
+                update_response = supabase.table("subscriptions").update({"status": "canceled"}).eq("id", db_subscription_id).execute()
+                logger.info(f"Marked subscription {db_subscription_id} as canceled in database only")
+                
+                return {"success": True, "message": "Subscription canceled in database", "database_only": True}
+            
+            # Cancel subscription in Stripe
+            try:
+                # Get the customer ID for this subscription to verify it belongs to this user
+                customer_response = supabase.table("stripe_customers").select("customer_id").eq("user_id", user_id).execute()
+                if customer_response.data and len(customer_response.data) > 0:
+                    customer_id = customer_response.data[0].get('customer_id')
+                    
+                    # Retrieve the subscription from Stripe to verify the customer
+                    stripe_sub = stripe.Subscription.retrieve(stripe_subscription_id)
+                    
+                    # Verify the subscription belongs to this customer
+                    if stripe_sub.customer != customer_id:
+                        logger.warning(f"Subscription {stripe_subscription_id} does not belong to customer {customer_id}")
+                        return {"success": False, "message": "Subscription verification failed"}
+                    
+                    # Cancel the subscription at period end to avoid prorated charges
+                    stripe.Subscription.modify(
+                        stripe_subscription_id,
+                        cancel_at_period_end=True
+                    )
+                    
+                    logger.info(f"Canceled Stripe subscription {stripe_subscription_id} at period end")
+                    
+                    # Update our database to mark subscription as canceled
+                    update_response = supabase.table("subscriptions").update({"status": "canceled"}).eq("id", db_subscription_id).execute()
+                    logger.info(f"Marked subscription {db_subscription_id} as canceled in database")
+                    
+                    return {
+                        "success": True, 
+                        "message": "Subscription canceled successfully. You'll have access until the end of your billing period.",
+                        "end_date": subscription.get('end_date')
+                    }
+            except Exception as stripe_error:
+                logger.error(f"Error canceling Stripe subscription: {str(stripe_error)}")
+                return {"success": False, "message": f"Error canceling subscription: {str(stripe_error)}"}
+            
+        except Exception as e:
+            logger.error(f"Error canceling subscription for user {user_id}: {str(e)}")
+            return {"success": False, "message": f"Error canceling subscription: {str(e)}"}
+
     def check_subscription_status(self, user_id: str) -> bool:
         """
         Check if a user has an active subscription.
@@ -241,6 +316,26 @@ class StripeService:
             from app.database.supabase_client import supabase
             from datetime import datetime, timedelta
             
+            # Check if we already processed this checkout session
+            session_id = session.get('id')
+            existing_payment = supabase.table("payments").select("id").eq("transaction_id", session_id).execute()
+            if existing_payment.data and len(existing_payment.data) > 0:
+                logger.info(f"Payment for checkout session {session_id} already exists, skipping duplicate creation")
+                return
+                
+            # Check if there's already an invoice payment for this subscription
+            # This is a more reliable transaction ID than the checkout session
+            subscription_id = session.get('subscription')
+            if subscription_id:
+                # Check if there's already a payment with this subscription ID that isn't a cs_test_ payment
+                existing_sub_payment = supabase.table("payments").select("*").eq("stripe_subscription_id", subscription_id).execute()
+                if existing_sub_payment.data:
+                    for payment in existing_sub_payment.data:
+                        transaction_id = payment.get('transaction_id', '')
+                        if transaction_id.startswith('in_'):  # Invoice payment
+                            logger.info(f"Found invoice payment for subscription {subscription_id}, skipping checkout session payment")
+                            return
+                
             # Save payment record to database
             amount = session.get('amount_total', 0) / 100  # Convert from cents to dollars
             if amount <= 0 and session.get('display_items'):
@@ -458,8 +553,9 @@ class StripeService:
             # Extract subscription info
             subscription_id = subscription.get('id')
             status = subscription.get('status')
+            cancel_at_period_end = subscription.get('cancel_at_period_end', False)
             
-            logger.info(f"Processing subscription.updated event: {subscription_id}, status={status}")
+            logger.info(f"Processing subscription.updated event: {subscription_id}, status={status}, cancel_at_period_end={cancel_at_period_end}")
             logger.debug(f"Full subscription data: {subscription}")
             
             if not subscription_id:
@@ -469,9 +565,9 @@ class StripeService:
             # Use the app-wide supabase client
             from app.database.supabase_client import supabase
             
-            # Map Stripe status to our status
+            # Map Stripe status to our status, considering cancel_at_period_end
             status_map = {
-                'active': 'active',
+                'active': 'active' if not cancel_at_period_end else 'canceled',  # Mark as canceled if cancel_at_period_end is True
                 'past_due': 'active',  # Still considered active but needs payment
                 'unpaid': 'expired',
                 'canceled': 'canceled',
@@ -481,6 +577,9 @@ class StripeService:
             }
             
             db_status = status_map.get(status, 'active')
+            if cancel_at_period_end and db_status == 'active':
+                db_status = 'canceled'
+                logger.info(f"Subscription is set to cancel at period end, setting status to {db_status}")
             
             # Get the current period end as the end_date
             current_period_end = subscription.get('current_period_end')
@@ -490,87 +589,101 @@ class StripeService:
                 from datetime import datetime
                 end_date = datetime.fromtimestamp(current_period_end).isoformat()
             
-            # Find and update the user's subscriptions using customer information
-            # First get the customer ID from the subscription
+            # First try to find and update by stripe_id (most reliable method)
+            try:
+                # Look up subscription by stripe_id
+                sub_check = supabase.table("subscriptions").select("id").eq("stripe_id", subscription_id).execute()
+                if sub_check.data and len(sub_check.data) > 0:
+                    # We found existing subscription(s), update status
+                    update_data = {"status": db_status}
+                    if end_date:
+                        update_data["end_date"] = end_date
+                    
+                    # Update all subscriptions with this stripe_id
+                    for existing_sub in sub_check.data:
+                        sub_id = existing_sub.get('id')
+                        logger.info(f"Updating existing subscription {sub_id} with stripe_id {subscription_id}")
+                        response = supabase.table("subscriptions").update(update_data).eq("id", sub_id).execute()
+                        logger.info(f"Updated subscription: {response.data}")
+                    
+                    # We've successfully updated by stripe_id, so return early
+                    return
+            except Exception as e:
+                logger.error(f"Error updating subscription by stripe_id: {str(e)}")
+            
+            # If we get here, we didn't find a matching subscription by stripe_id
+            # Try to find by customer_id and user_id
+            response = None
             customer_id = subscription.get('customer')
-            response = None  # Initialize response variable
             
             if customer_id:
-                # Try to get the user_id associated with this customer
                 try:
+                    # Get user_id from customer_id
                     customer_response = supabase.table("stripe_customers").select("user_id").eq("customer_id", customer_id).execute()
                     if customer_response.data and len(customer_response.data) > 0:
                         user_id = customer_response.data[0].get('user_id')
                         if user_id:
-                            # Update all active subscriptions for this user
-                            update_data = {"status": db_status}
-                            if end_date:
-                                update_data["end_date"] = end_date
-                                
-                            logger.info(f"Updating subscriptions for user {user_id} with data: {update_data}")
-                            response = supabase.table("subscriptions").update(update_data).eq("user_id", user_id).eq("status", "active").execute()
+                            # Look for existing active subscriptions for this user
+                            existing_subs = supabase.table("subscriptions").select("*").eq("user_id", user_id).eq("status", "active").execute()
                             
-                            if response.data:
-                                logger.info(f"Updated subscriptions for user {user_id}: {response.data}")
-                            else:
-                                logger.warning(f"No active subscriptions found to update for user {user_id}")
+                            if existing_subs.data and len(existing_subs.data) > 0:
+                                # User has active subscriptions, update them
+                                update_data = {"status": db_status}
+                                if end_date:
+                                    update_data["end_date"] = end_date
                                 
-                                # If the subscription doesn't exist yet, create it
-                                if db_status == "active":
-                                    try:
-                                        import uuid
-                                        from datetime import datetime, timedelta
-                                        
-                                        # Generate UUID for subscription
-                                        db_sub_id = str(uuid.uuid4())
-                                        
-                                        # Get subscription details for timing
-                                        start_date = datetime.now()
-                                        end_date_ts = subscription.get('current_period_end')
-                                        end_date_obj = datetime.fromtimestamp(end_date_ts) if end_date_ts else start_date + timedelta(days=30)
-                                        
-                                        # Create subscription
-                                        sub_data = {
-                                            "id": db_sub_id,
-                                            "user_id": user_id,
-                                            "status": "active",
-                                            "start_date": start_date.isoformat(),
-                                            "end_date": end_date_obj.isoformat(),
-                                            "created_at": start_date.isoformat(),
-                                            "stripe_id": subscription_id
-                                        }
-                                        
-                                        sub_result = supabase.table("subscriptions").insert(sub_data).execute()
-                                        logger.info(f"Created new subscription for user {user_id}: {sub_result.data}")
-                                        response = sub_result  # Set response to the created subscription result
-                                    except Exception as e:
-                                        logger.error(f"Error creating new subscription: {str(e)}")
+                                # Also update stripe_id if not set
+                                for existing_sub in existing_subs.data:
+                                    sub_id = existing_sub.get('id')
+                                    sub_update_data = update_data.copy()
+                                    
+                                    # Add stripe_id if missing
+                                    if not existing_sub.get('stripe_id'):
+                                        sub_update_data["stripe_id"] = subscription_id
+                                    
+                                    logger.info(f"Updating existing subscription {sub_id} for user {user_id}")
+                                    response = supabase.table("subscriptions").update(sub_update_data).eq("id", sub_id).execute()
+                                    logger.info(f"Updated subscription: {response.data}")
+                                
+                                # We've updated existing subscriptions, so return early
+                                return
+                            elif db_status == "active" and not cancel_at_period_end:
+                                # No active subscriptions but status is active and not canceling
+                                # Create new subscription
+                                try:
+                                    import uuid
+                                    from datetime import datetime, timedelta
+                                    
+                                    # Generate UUID for subscription
+                                    db_sub_id = str(uuid.uuid4())
+                                    
+                                    # Get subscription details for timing
+                                    start_date = datetime.now()
+                                    end_date_ts = subscription.get('current_period_end')
+                                    end_date_obj = datetime.fromtimestamp(end_date_ts) if end_date_ts else start_date + timedelta(days=30)
+                                    
+                                    # Create subscription
+                                    sub_data = {
+                                        "id": db_sub_id,
+                                        "user_id": user_id,
+                                        "status": "active", 
+                                        "start_date": start_date.isoformat(),
+                                        "end_date": end_date_obj.isoformat(),
+                                        "created_at": start_date.isoformat(),
+                                        "stripe_id": subscription_id
+                                    }
+                                    
+                                    sub_result = supabase.table("subscriptions").insert(sub_data).execute()
+                                    logger.info(f"Created new subscription for user {user_id}: {sub_result.data}")
+                                    return
+                                except Exception as e:
+                                    logger.error(f"Error creating new subscription: {str(e)}")
                 except Exception as e:
                     logger.error(f"Error getting user_id from customer: {str(e)}")
-            
-            if not response:
-                # Now try to find by stripe_id
-                try:
-                    # Look up subscription by stripe_id
-                    sub_check = supabase.table("subscriptions").select("id").eq("stripe_id", subscription_id).execute()
-                    if sub_check.data and len(sub_check.data) > 0:
-                        sub_id = sub_check.data[0].get('id')
-                        update_data = {"status": db_status}
-                        if end_date:
-                            update_data["end_date"] = end_date
-                            
-                        logger.info(f"Updating subscription {sub_id} with stripe_id {subscription_id}")
-                        response = supabase.table("subscriptions").update(update_data).eq("id", sub_id).execute()
-                        logger.info(f"Updated subscription: {response.data}")
-                    else:
-                        logger.warning(f"Could not find subscription with stripe_id {subscription_id}, skipping update")
-                except Exception as e:
-                    logger.error(f"Error updating subscription by stripe_id: {str(e)}")
-            
-            if response and response.data:
-                logger.info(f"Subscription updated successfully: {response.data}")
-            else:
-                logger.warning(f"No subscriptions were updated")
+                
+            # If we get here, we couldn't update any existing subscriptions
+            # Log that we didn't find any subscriptions to update
+            logger.warning(f"No existing subscriptions found to update for stripe_id {subscription_id}")
                 
         except Exception as e:
             logger.error(f"Error updating subscription record: {str(e)}")
@@ -647,6 +760,40 @@ class StripeService:
             if not (invoice_id and customer_id):
                 logger.error("Missing required invoice data (id or customer)")
                 return
+            
+            # Check if we already processed this invoice
+            from app.database.supabase_client import supabase
+            subscription_id = invoice.get('subscription')
+            
+            # First check by transaction ID
+            existing_payment = supabase.table("payments").select("id").eq("transaction_id", invoice_id).execute()
+            if existing_payment.data and len(existing_payment.data) > 0:
+                logger.info(f"Payment for invoice {invoice_id} already exists, skipping duplicate creation")
+                return
+                
+            # If we have a subscription ID, check for existing payments and replace it
+            # We WANT to replace "cs_test_" checkout session payments with proper invoice payments
+            if subscription_id:
+                existing_sub_payment = supabase.table("payments").select("*").eq("stripe_subscription_id", subscription_id).execute()
+                if existing_sub_payment.data and len(existing_sub_payment.data) > 0:
+                    # There's an existing payment for this subscription, but it's probably from the checkout session
+                    payment_data = existing_sub_payment.data[0]
+                    payment_id = payment_data.get('id')
+                    existing_transaction_id = payment_data.get('transaction_id', '')
+                    
+                    # If it starts with cs_test_, it's a checkout session payment - replace it
+                    if existing_transaction_id.startswith('cs_test_'):
+                        logger.info(f"Found checkout session payment {payment_id} for subscription {subscription_id}, replacing with invoice payment")
+                        # Delete the existing payment record
+                        try:
+                            delete_result = supabase.table("payments").delete().eq("id", payment_id).execute()
+                            logger.info(f"Deleted checkout session payment: {delete_result.data}")
+                        except Exception as e:
+                            logger.error(f"Error deleting checkout session payment: {str(e)}")
+                    else:
+                        # It's a proper invoice payment, don't duplicate
+                        logger.info(f"Payment for subscription {subscription_id} already exists with transaction_id {existing_transaction_id}, skipping duplicate creation")
+                        return
                 
             # Try to get the user ID
             user_id = None
@@ -662,7 +809,6 @@ class StripeService:
             # If still no user ID, try checking the subscription in our database using stripe_id
             if not user_id and subscription_id:
                 try:
-                    from app.database.supabase_client import supabase
                     subscription_response = supabase.table("subscriptions").select("user_id").eq("stripe_id", subscription_id).execute()
                     if subscription_response.data and len(subscription_response.data) > 0:
                         user_id = subscription_response.data[0].get('user_id')
@@ -673,7 +819,6 @@ class StripeService:
             # If still no user ID, try to get from stripe_customers table
             if not user_id and customer_id:
                 try:
-                    from app.database.supabase_client import supabase
                     customer_response = supabase.table("stripe_customers").select("user_id").eq("customer_id", customer_id).execute()
                     if customer_response.data and len(customer_response.data) > 0:
                         user_id = customer_response.data[0].get('user_id')
@@ -686,8 +831,6 @@ class StripeService:
                 user_id = f"customer_{customer_id}"
                 logger.warning(f"Using placeholder user ID: {user_id}")
                 
-            # Use the app-wide supabase client
-            from app.database.supabase_client import supabase
             from datetime import datetime
             
             # Create payment record
